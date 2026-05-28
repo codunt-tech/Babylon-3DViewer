@@ -17,6 +17,34 @@ const getCompartmentNamesFromShipData = () => {
     return Array.from(names);
 };
 
+const organizeByCompartments = () => {
+    const compartments = {};
+    ['plates', 'brackets', 'stiffeners', 'shells'].forEach(componentType => {
+        if (TestFPSOStruc[componentType]) {
+            TestFPSOStruc[componentType].forEach(item => {
+                const compartmentName = item.compartmentName;
+                if (!compartments[compartmentName]) {
+                    compartments[compartmentName] = {
+                        compartmentName: compartmentName,
+                        uid: item.uid,
+                        components: {}
+                    };
+                }
+                compartments[compartmentName].components[componentType] = {
+                    name: compartmentName + '_' + componentType.toUpperCase(),
+                    path: item.link,
+                    type: componentType,
+                    uid: item.uid
+                };
+            });
+        }
+    });
+    return compartments;
+};
+
+const initialOrganizedCompartments = organizeByCompartments();
+
+
 const BabylonScene = () => {
     const HEADER_HEIGHT = 54;
     const RIGHT_RAIL_WIDTH = 220;
@@ -30,7 +58,7 @@ const BabylonScene = () => {
     const [loadingProgress, setLoadingProgress] = useState({ loaded: 0, total: 0 });
     const [loadingFps, setLoadingFps] = useState(0);
     const [loadingParallelism, setLoadingParallelism] = useState(1);
-    const [organizedCompartments, setOrganizedCompartments] = useState({});
+    const [organizedCompartments, setOrganizedCompartments] = useState(initialOrganizedCompartments);
     const [compartmentVisibility, setCompartmentVisibility] = useState({});
     const [componentTypeVisibility, setComponentTypeVisibility] = useState({
         plates: true,
@@ -67,50 +95,43 @@ const BabylonScene = () => {
         setCompartmentVisibility(initialVisibility);
     }, [compartmentNames]);
 
-    // Center the model in the scene
     const centerModel = (scene, meshes, camera) => {
-        if (meshes.length === 0) return;
-        
-        // Calculate bounding box of all meshes
-        let min = new Vector3(Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE);
-        let max = new Vector3(Number.MIN_VALUE, Number.MIN_VALUE, Number.MIN_VALUE);
-        
-        meshes.forEach(mesh => {
-            if (mesh.getBoundingInfo) {
-                // Force bounding info update
-                mesh.refreshBoundingInfo();
-                const boundingInfo = mesh.getBoundingInfo();
-                const meshMin = boundingInfo.boundingBox.minimumWorld;
-                const meshMax = boundingInfo.boundingBox.maximumWorld;
-                
-                min = Vector3.Minimize(min, meshMin);
-                max = Vector3.Maximize(max, meshMax);
-            }
+        const valid = meshes.filter(m =>
+            m && !m.isDisposed() && m.getTotalVertices() > 0
+        );
+        if (valid.length === 0) return;
+
+        // Force update all bounding boxes
+        valid.forEach(m => m.refreshBoundingInfo());
+
+        let min = new Vector3(Infinity, Infinity, Infinity);
+        let max = new Vector3(-Infinity, -Infinity, -Infinity);
+
+        valid.forEach(mesh => {
+            const bi = mesh.getBoundingInfo();
+            if (!bi) return;
+            min = Vector3.Minimize(min, bi.boundingBox.minimumWorld);
+            max = Vector3.Maximize(max, bi.boundingBox.maximumWorld);
         });
-        
-        // Calculate center and size
+
         const center = Vector3.Center(min, max);
         const size = max.subtract(min);
-        const maxDimension = Math.max(size.x, size.y, size.z);
-        
-        // Set camera target to center
-        camera.setTarget(center);
-        
-        // Set camera distance based on model size
-        const distance = maxDimension * 2; // Adjust multiplier as needed
-        camera.radius = distance;
-        
-        // Set better camera angles for ship viewing
-        camera.alpha = Math.PI / 4; // 45 degrees horizontal
-        camera.beta = Math.PI / 3;  // 60 degrees vertical
-        
-        console.log(`🎯 Model centered:`, {
-            center: center,
-            size: size,
-            maxDimension: maxDimension,
-            cameraDistance: distance,
-            meshCount: meshes.length
-        });
+        const maxDim = Math.max(size.x, size.y, size.z);
+
+        // ✅ Use canvas aspect ratio for proper fit
+        const canvas = scene.getEngine().getRenderingCanvas();
+        const aspect = canvas ? canvas.width / canvas.height : 1.6;
+        const fov = camera.fov || (Math.PI / 4);
+
+        // Fit longest dimension into view with padding
+        const fitDist = (maxDim / 2) / Math.tan(fov / 2) * 1.8;
+
+        camera.target = center;
+        camera.radius = fitDist;
+        camera.alpha = -Math.PI / 4;   // ✅ 45° angle — shows ship from front-side
+        camera.beta = Math.PI / 3;     // ✅ ~60° — good top-down angle
+        camera.lowerRadiusLimit = fitDist * 0.1;
+        camera.upperRadiusLimit = fitDist * 10;
     };
 
     // Camera centering functionality for 3-Level View System
@@ -131,15 +152,19 @@ const BabylonScene = () => {
             if (!mesh.metadata) return;
 
             if (targetType === 'compartment' && mesh.metadata.compartmentName === targetName) {
+                mesh.computeWorldMatrix(true);
+                mesh.refreshBoundingInfo();
                 const bi = mesh.getBoundingInfo();
                 if (!bi) return;
                 min = Vector3.Minimize(min, bi.boundingBox.minimumWorld);
                 max = Vector3.Maximize(max, bi.boundingBox.maximumWorld);
                 hasBounds = true;
             } else if (targetType === 'part' && mesh.metadata.compartmentName) {
-                const partName = mesh.name || `unnamed_${Math.random().toString(36).substr(2, 9)}`;
+                const partName = mesh.name || `unnamed_${mesh.id}`;
                 const partId = `${mesh.metadata.compartmentName}-${partName}`;
                 if (partId === targetName) {
+                    mesh.computeWorldMatrix(true);
+                    mesh.refreshBoundingInfo();
                     const bi = mesh.getBoundingInfo();
                     if (!bi) return;
                     min = Vector3.Minimize(min, bi.boundingBox.minimumWorld);
@@ -161,68 +186,33 @@ const BabylonScene = () => {
         }
     }, []);
 
-    // Organize all GLB files by compartment
-    const organizeByCompartments = () => {
-        const compartments = {};
-        
-        // Add main structure files (commented out - not loading main structure)
-        // if (!compartments['MAIN_STRUCTURE']) {
-        //     compartments['MAIN_STRUCTURE'] = {
-        //         compartmentName: 'MAIN_STRUCTURE',
-        //         uid: 'main',
-        //         components: {}
-        //     };
-        // }
-        
-        // if (TestFPSOStruc.compartment) {
-        //     compartments['MAIN_STRUCTURE'].components.compartment = {
-        //         name: 'FPSO_COMPARTMENT',
-        //         path: TestFPSOStruc.compartment,
-        //         type: 'compartment'
-        //     };
-        // }
 
-        // Process plates, brackets, stiffeners, and shells
-        ['plates', 'brackets', 'stiffeners', 'shells'].forEach(componentType => {
-            if (TestFPSOStruc[componentType]) {
-                TestFPSOStruc[componentType].forEach(item => {
-                    const compartmentName = item.compartmentName;
-                    
-                    if (!compartments[compartmentName]) {
-                        compartments[compartmentName] = {
-                            compartmentName: compartmentName,
-                            uid: item.uid,
-                            components: {}
-                        };
-                    }
-                    
-                    compartments[compartmentName].components[componentType] = {
-                        name: compartmentName + '_' + componentType.toUpperCase(),
-                        path: item.link,
-                        type: componentType,
-                        uid: item.uid
-                    };
-                });
-            }
-        });
-
-        return compartments;
-    };
 
     const loadGLBFile = async (scene, filePath, compartmentName, componentName, componentType) => {
         try {
-            const result = await SceneLoader.ImportMeshAsync("", "", filePath, scene);
-            
-            result.meshes.forEach(mesh => {
-                // Preserve existing metadata from GLB and add our custom metadata
+            // ✅ Skip unused data during import
+            const result = await SceneLoader.ImportMeshAsync(
+                "",
+                "",
+                filePath,
+                scene,
+                null,           // onProgress
+                ".glb"          // ✅ explicitly tell Babylon the format
+            );
+
+            // ✅ Only process actual geometry meshes, skip cameras/lights/roots
+            const geometryMeshes = result.meshes.filter(
+                m => m.getTotalVertices() > 0
+            );
+
+            geometryMeshes.forEach(mesh => {
                 mesh.metadata = {
-                    ...mesh.metadata, // Preserve existing metadata (like POSITION)
+                    ...mesh.metadata,
                     compartmentName,
                     componentType,
                     componentName
                 };
 
-                // Skip non-renderable/root nodes
                 if (!mesh.material) return;
 
                 let targetColor = null;
@@ -238,58 +228,129 @@ const BabylonScene = () => {
                         break;
                     case 'shells':
                     case 'shell': {
-                        const position = mesh.metadata?.POSITION;
-                        const isDeck =
-                            position === 'Deck' ||
-                            mesh.name.toLowerCase().includes('deck');
+                        const pos = mesh.metadata?.POSITION;
+                        const isDeck = pos === 'Deck' || mesh.name.toLowerCase().includes('deck');
                         targetColor = isDeck
-                            ? new Color3(0.561, 0.737, 0.561) // #8fbc8f
-                            : new Color3(0.29, 0.565, 0.886); // #4a90e2
+                            ? new Color3(0.561, 0.737, 0.561)
+                            : new Color3(0.29, 0.565, 0.886);
                         break;
                     }
                     default:
                         targetColor = new Color3(0.6, 0.6, 0.6);
-                        break;
                 }
 
-                const mat = new StandardMaterial(`mat_${mesh.name}_${Date.now()}`, scene);
+                const mat = new StandardMaterial(
+                    `mat_${componentType}_${compartmentName}`,  // ✅ shared name = reused material
+                    scene
+                );
                 mat.diffuseColor = targetColor;
                 mat.specularColor = new Color3(0, 0, 0);
                 mat.specularPower = 0;
-                mat.backFaceCulling = true;
+                mat.backFaceCulling = false;
                 mat.alpha = 1.0;
-                mat.transparencyMode = 0; // BABYLON.Material.MATERIAL_OPAQUE
-                mat.needDepthPrePass = false;
-                mat.disableDepthWrite = false;
+                mat.transparencyMode = 0;
 
-                if (componentType === 'plates') {
-                    // Avoid z-fighting against shell surfaces.
-                    mat.zOffset = 1;
-                }
+                if (componentType === 'plates') mat.zOffset = 1;
 
                 mesh.material = mat;
-                mat.freeze();
 
+                // ✅ Edge rendering only for shells (most expensive — skip for others)
                 if (componentType === 'shells' || componentType === 'shell') {
                     mesh.enableEdgesRendering(0.9, true);
                     mesh.edgesWidth = 2.0;
                     mesh.edgesColor = new Color4(1, 1, 1, 0.85);
                 }
+
+                // ✅ Freeze mesh transforms (saves CPU each frame since ship is static)
+                mesh.freezeWorldMatrix();
             });
-            
-            return { 
-                meshes: result.meshes || [], 
-                // Treat "no meshes produced" as a load failure.
-                success: (result.meshes || []).length > 0,
+
+            return {
+                meshes: geometryMeshes,
+                success: geometryMeshes.length > 0,
                 compartmentName,
                 componentName,
                 componentType
             };
         } catch (error) {
-            console.error(`Error loading GLB file ${filePath}:`, error);
+            console.error(`Error loading GLB: ${filePath}`, error);
             return { meshes: [], success: false };
         }
-    };
+    };   // ← correct closing for the loadGLBFile arrow function
+
+    const loadedCompartmentsRef = useRef({});
+
+    useEffect(() => {
+        loadedCompartmentsRef.current = loadedCompartments;
+    }, [loadedCompartments]);
+
+    const loadCompartment = useCallback(async (compartmentName) => {
+        const scene = sceneRef.current;
+        if (!scene) return;
+
+        const compartmentData = organizedCompartments[compartmentName];
+        if (!compartmentData) return;
+
+        // Dispose using ref (not stale closure)
+        Object.values(loadedCompartmentsRef.current).forEach(compartment => {
+            Object.values(compartment.loadedComponents || {}).forEach(comp => {
+                (comp.meshes || []).forEach(mesh => {
+                    if (mesh && !mesh.isDisposed()) mesh.dispose(false, true);
+                });
+            });
+        });
+        setLoadedCompartments({});
+        loadedCompartmentsRef.current = {};
+
+        let allFiles = [];
+        Object.values(compartmentData.components).forEach(comp => {
+            allFiles.push({
+                type: comp.type,
+                data: comp,
+                compartmentName: compartmentName
+            });
+        });
+
+        setLoadingProgress({ loaded: 0, total: allFiles.length });
+        let allMeshes = [];
+        
+        const newLoadedCompartments = {
+            [compartmentName]: { ...compartmentData, loadedComponents: {} }
+        };
+
+        const results = await Promise.all(
+            allFiles.map(async ({ type, data, compartmentName }) => {
+                const result = await loadGLBFile(scene, data.path, compartmentName, data.name, type);
+                setLoadingProgress(prev => ({ ...prev, loaded: prev.loaded + 1 }));
+                return { type, data, result, compartmentName };
+            })
+        );
+
+        results.forEach(({ type, data, result, compartmentName }) => {
+            if (result.success) {
+                newLoadedCompartments[compartmentName].loadedComponents[type] = {
+                    ...data,
+                    meshes: result.meshes
+                };
+                allMeshes.push(...result.meshes);
+            }
+        });
+
+        setLoadedCompartments(newLoadedCompartments);
+        
+        const initialVisibility = { [compartmentName]: true };
+        setCompartmentVisibility(initialVisibility);
+
+        if (allMeshes.length > 0) {
+            setTimeout(() => {
+                const scene = sceneRef.current;
+                if (!scene) return;
+                centerModel(scene, allMeshes, scene.activeCamera);
+            }, 500);
+        }
+        
+        setTimeout(() => setLoadingProgress({ loaded: 0, total: 0 }), 500);
+    }, [organizedCompartments]);
 
     // Close context menu when clicking elsewhere
     useEffect(() => {
@@ -566,9 +627,30 @@ const BabylonScene = () => {
                 if (viewMode === 'compartment' && selectedPart) {
                     console.log(`⚡ Context Action: Hide Part ${selectedPart}`)
                     handleHidePart(selectedPart)
+                    if (sceneRef.current) {
+                        sceneRef.current.meshes.forEach(mesh => {
+                            const pName = mesh.name;
+                            const pId = `${selectedCompartment}-${pName}`;
+                            if (pId === selectedPart) mesh.isVisible = false;
+                        });
+                    }
                 } else if (viewMode === 'asset' && selectedCompartment) {
                     console.log(`⚡ Context Action: Hide Compartment ${selectedCompartment}`)
                     handleHide(selectedCompartment)
+                }
+                break
+            case 'fitToScreen':
+                if (viewMode === 'compartment' && selectedCompartment) {
+                    centerOnSelection('compartment', selectedCompartment);
+                } else if (viewMode === 'hullPart' && selectedPart) {
+                    centerOnSelection('part', selectedPart);
+                } else {
+                    // Asset view — fit all loaded meshes
+                    const scene = sceneRef.current;
+                    if (scene) {
+                        const all = scene.meshes.filter(m => m.isVisible && m.getTotalVertices?.() > 0);
+                        centerModel(scene, all, scene.activeCamera);
+                    }
                 }
                 break
             case 'showAll':
@@ -584,94 +666,48 @@ const BabylonScene = () => {
 
     // Handle 3-Level selection: Asset → Compartment → Hull Part
     const handleCompartmentSelect = useCallback((compartmentName, partId, position, isRightClick, clickedMesh, partPosition) => {
-        if (partPosition) {
-            setCurrentPartPosition(partPosition);
+        if (partPosition) setCurrentPartPosition(partPosition);
+
+        // ─── RIGHT CLICK ──────────────────────────────────────────────
+        if (isRightClick) {
+            if (compartmentName) setSelectedCompartment(compartmentName);
+            if (partId && viewMode === 'compartment') setSelectedPart(partId);
+            if (position) setContextMenu({ visible: true, position });
+            return;
         }
-        
-        // Enhanced logging for 3-level selection
-        if (clickedMesh) {
-            console.log(`🎯 3-LEVEL BABYLON SELECTION:`, {
-                compartmentName: compartmentName,
-                partId: partId,
-                clickedObjectName: clickedMesh.name,
-                isRightClick,
-                clickType: isRightClick ? 'Right Click' : 'Left Click',
-                currentViewMode: viewMode,
-                currentCompartmentSelection: selectedCompartment,
-                currentPartSelection: selectedPart,
-                userData: clickedMesh.metadata,
-                componentType: clickedMesh.metadata?.componentType
-            })
-        }
-        
-        if (!partId) {
-            // Sidebar/category selection: show only the clicked compartment.
+
+        // ─── LEFT CLICK ───────────────────────────────────────────────
+        setContextMenu({ visible: false, position: { x: 0, y: 0 } });
+
+        // Sidebar click (partId is null) — load compartment
+        if (!partId && compartmentName) {
+            loadCompartment(compartmentName);          // ✅ always load fresh
             setSelectedCompartment(compartmentName);
             setSelectedPart(null);
             setSelectedComponentType(null);
             setViewMode('compartment');
             setIsolatedParts(new Set());
             setHiddenParts(new Set());
+            return;
+        }
 
-            // Force only the selected compartment to be visible.
-            const onlySelectedVisible = {};
-            Object.keys(loadedCompartments).forEach((name) => {
-                onlySelectedVisible[name] = name === compartmentName;
-            });
-            if (!(compartmentName in onlySelectedVisible)) {
-                onlySelectedVisible[compartmentName] = true;
-            }
-            setCompartmentVisibility(onlySelectedVisible);
-            setIsolatedCompartments(new Set([compartmentName]));
-        } else if (viewMode === 'asset') {
-            // Asset View: Select compartment (doesn't change view automatically)
-            console.log(`📦 Compartment selected in Asset View: ${compartmentName}`)
-            setSelectedCompartment(compartmentName)
-            setSelectedPart(null) // Clear part selection
-            
-        } else if (viewMode === 'compartment' && selectedCompartment === compartmentName) {
-            // Compartment View: Select part (doesn't change view automatically)
-            const stringPartId = partId ? String(partId) : null
-            
-            if (stringPartId && stringPartId !== selectedPart) {
-                console.log(`🔧 Part selected in Compartment View: ${stringPartId}`)
-                console.log(`🔧 Part ID details:`, {
-                    partId: stringPartId,
-                    partIdType: typeof stringPartId,
-                    includesDash: stringPartId.includes('-'),
-                    splitResult: stringPartId.split('-'),
-                    compartmentFromPart: stringPartId.split('-')[0],
-                    partNameFromPart: stringPartId.split('-').slice(1).join('-')
-                })
-                setSelectedPart(stringPartId)
-            } else if (stringPartId === selectedPart) {
-                console.log(`🔧 Deselecting part: ${stringPartId}`)
-                setSelectedPart(null)
-            }
-        } else if (viewMode === 'hullPart') {
-            // Hull Part View: Additional part selection logging
-            const stringPartId = partId ? String(partId) : null
-            console.log(`🔧 Hull Part View - Part clicked:`, {
-                clickedPartId: stringPartId,
-                currentSelectedPart: selectedPart,
-                compartmentName: compartmentName,
-                isRightClick: isRightClick,
-                clickedMeshName: clickedMesh?.name,
-                clickedMeshUserData: clickedMesh?.metadata
-            })
+        // Canvas click with a part
+        if (viewMode === 'compartment' && compartmentName === selectedCompartment) {
+            setSelectedPart(prev => prev === partId ? null : partId);
+            return;
         }
-        
-        // Handle context menu - Show for both compartment and part selections
-        if (isRightClick && position) {
-            console.log(`🖱️ Showing context menu at:`, position, 'View Mode:', viewMode)
-            setContextMenu({
-                visible: true,
-                position: position
-            })
-        } else {
-            setContextMenu({ visible: false, position: { x: 0, y: 0 } })
+
+        if (viewMode === 'hullPart' && compartmentName === selectedCompartment) {
+            setSelectedPart(prev => prev === partId ? null : partId);
+            return;
         }
-    }, [viewMode, selectedCompartment, selectedPart])
+
+        // Canvas click in asset view — select compartment
+        if (viewMode === 'asset' && compartmentName) {
+            setSelectedCompartment(compartmentName);
+            setSelectedPart(null);
+        }
+    }, [viewMode, selectedCompartment, loadCompartment]);
 
     useEffect(() => {
         handleCompartmentSelectRef.current = handleCompartmentSelect;
@@ -687,110 +723,105 @@ const BabylonScene = () => {
             preserveDrawingBuffer: true
         });
         engineRef.current = engine;
+        setTimeout(() => engine.resize(), 100);
 
         // Create scene with an opaque background to avoid washed-out compositing
         const scene = new Scene(engine);
         scene.clearColor = new Color4(0.878, 0.914, 0.941, 1.0); // #e0e9f0
         sceneRef.current = scene;
 
-        const camera = new ArcRotateCamera("Camera", Math.PI / 4, Math.PI / 3, 100, new Vector3(0, 0, 0), scene);
+        const camera = new ArcRotateCamera(
+            "Camera",
+            -Math.PI / 2,   // alpha: face the ship from the side
+            Math.PI / 3,    // beta: slight top-down angle
+            100,
+            Vector3.Zero(),
+            scene
+        );
         const canvas = canvasRef.current;
         camera.attachControl(canvas, true);
 
-        // Smooth native Babylon camera behavior.
-        camera.panningSensibility = 120;
-        camera.useCtrlForPanning = false;
-        camera.inertia = 0.88;
-        camera.angularSensibilityX = 2800;
-        camera.angularSensibilityY = 2800;
-        camera.wheelDeltaPercentage = 0.01;
+        // Smooth, natural feel
+        camera.inertia = 0.92;                  // high inertia = smooth glide
+        camera.angularSensibilityX = 800;       // lower = more responsive horizontal
+        camera.angularSensibilityY = 800;       // lower = more responsive vertical
+        camera.panningSensibility = 100;        // pan speed
+        camera.wheelDeltaPercentage = 0.01;     // smooth zoom
         camera.pinchDeltaPercentage = 0.01;
-        
-        // Set camera limits
-        camera.lowerRadiusLimit = 5;
-        camera.upperRadiusLimit = 1000;
+
+        // Limits
+        camera.minZ = 1;
+        camera.maxZ = 5000;
+        camera.lowerRadiusLimit = 1;
+        camera.upperRadiusLimit = 3000;
+        camera.lowerBetaLimit = 0.1;           // don't go below ground
+        camera.upperBetaLimit = Math.PI / 2;   // don't flip over the top
+
+        // Let Babylon handle all pointer input natively (no manual mouse listeners)
+        camera.useAutoRotationBehavior = false;
 
         const handleContextMenu = (event) => {
             event.preventDefault();
         };
 
-        // Handle selection clicks - 3-Level View System
-        const handleCanvasClick = (event) => {
-            if (event.button !== 0 && event.button !== 2) {
-                return;
-            }
-            if (event.button === 2) {
-                event.preventDefault();
-            }
-            const pickResult = scene.pick(event.offsetX, event.offsetY);
-            
-            if (pickResult.hit && pickResult.pickedMesh && pickResult.pickedMesh.metadata) {
-                const metadata = pickResult.pickedMesh.metadata;
-                const compartmentName = metadata.compartmentName;
-                
-                if (compartmentName) {
-                    const isRightClick = event.button === 2;
-                    const position = {
-                        x: event.clientX,
-                        y: event.clientY
-                    };
-                    
-                    // Create part ID for individual mesh selection
-                    const partName = pickResult.pickedMesh.name || `unnamed_${Math.random().toString(36).substr(2, 9)}`;
-                    const partId = `${compartmentName}-${partName}`;
-                    const partPosition = pickResult.pickedPoint
-                        ? {
-                            x: Number(pickResult.pickedPoint.x.toFixed(3)),
-                            y: Number(pickResult.pickedPoint.y.toFixed(3)),
-                            z: Number(pickResult.pickedPoint.z.toFixed(3))
-                        }
-                        : null;
-                    
-                    // Enhanced logging for 3-level selection
-                    console.log('🎯 BABYLON PART SELECTED:', {
-                        compartmentName,
-                        partName,
-                        partId,
-                        meshName: pickResult.pickedMesh.name,
-                        clickType: isRightClick ? 'Right Click' : 'Left Click',
-                        userData: pickResult.pickedMesh.metadata,
-                        componentType: metadata.componentType,
-                        partIdType: typeof partId,
-                        partIdDetails: {
-                            includesDash: partId.includes('-'),
-                            splitResult: partId.split('-'),
-                            compartmentFromPart: partId.split('-')[0],
-                            partNameFromPart: partId.split('-').slice(1).join('-'),
-                            matchesSelectedPart: partId === selectedPart
-                        }
-                    });
+        const handleCanvasPickAt = (offsetX, offsetY, clientX, clientY, isRightClick) => {
+            const pickResult = scene.pick(offsetX, offsetY);
+            const position = { x: clientX, y: clientY };
 
-                    // Always call the latest handler (avoids stale closure during async loading).
-                    handleCompartmentSelectRef.current?.(
-                        compartmentName,
-                        partId,
-                        position,
-                        isRightClick,
-                        pickResult.pickedMesh,
-                        partPosition
-                    );
-                }
-            } else {
-                // Clicked on empty space
+            if (pickResult.hit && pickResult.pickedMesh?.metadata?.compartmentName) {
+                const { compartmentName, componentType } = pickResult.pickedMesh.metadata;
+                const partName = pickResult.pickedMesh.name || 'unnamed';
+                const partId = `${compartmentName}-${partName}`;
+                const partPosition = pickResult.pickedPoint ? {
+                    x: Number(pickResult.pickedPoint.x.toFixed(3)),
+                    y: Number(pickResult.pickedPoint.y.toFixed(3)),
+                    z: Number(pickResult.pickedPoint.z.toFixed(3))
+                } : null;
+
                 handleCompartmentSelectRef.current?.(
-                    null,
-                    null,
-                    { x: event.clientX, y: event.clientY },
-                    event.button === 2,
-                    null,
-                    null
+                    compartmentName, partId, position,
+                    isRightClick, pickResult.pickedMesh, partPosition
                 );
+            } else {
+                // Clicked empty space
+                if (!isRightClick) {
+                    setContextMenu({ visible: false, position: { x: 0, y: 0 } });
+                }
             }
         };
 
-        // Add event listeners
-        canvas.addEventListener('contextmenu', handleContextMenu, { passive: false });
-        canvas.addEventListener('pointerdown', handleCanvasClick, { passive: false });
+        let pointerDownX = 0;
+        let pointerDownY = 0;
+        let isDrag = false;
+
+        const onPointerDown = (e) => {
+            pointerDownX = e.clientX;
+            pointerDownY = e.clientY;
+            isDrag = false;
+        };
+
+        const onPointerMove = (e) => {
+            const dx = e.clientX - pointerDownX;
+            const dy = e.clientY - pointerDownY;
+            if (Math.sqrt(dx * dx + dy * dy) > 6) isDrag = true;
+        };
+
+        const onPointerUp = (e) => {
+            if (isDrag) return;                      // was a drag, skip selection
+            if (e.button !== 0) return;             // only left click here
+            handleCanvasPickAt(e.offsetX, e.offsetY, e.clientX, e.clientY, false);
+        };
+
+        const onContextMenuEvent = (e) => {
+            e.preventDefault();
+            if (isDrag) return;
+            handleCanvasPickAt(e.offsetX, e.offsetY, e.clientX, e.clientY, true);
+        };
+
+        canvas.addEventListener('pointerdown', onPointerDown);
+        canvas.addEventListener('pointermove', onPointerMove);
+        canvas.addEventListener('pointerup', onPointerUp);
+        canvas.addEventListener('contextmenu', onContextMenuEvent);
 
         canvas.style.cursor = 'grab';
         canvas.style.touchAction = 'none';
@@ -810,128 +841,75 @@ const BabylonScene = () => {
         dirLight2.intensity = 0.3;
         dirLight2.specular = new Color3(0, 0, 0);
 
-        // Load all models organized by compartments
-        const getAdaptiveParallelism = (fps) => {
-            if (fps < 24) return 1;
-            if (fps < 36) return 2;
-            return 3;
-        };
+        // ✅ Only re-render when something changes (huge FPS saving when static)
+        scene.skipFrustumClipping = false;
+        engine.setHardwareScalingLevel(1.0);
 
-        const waitNextFrame = () => new Promise((resolve) => {
-            if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-                window.requestAnimationFrame(() => resolve());
-                return;
-            }
-            setTimeout(resolve, 0);
-        });
+        // ✅ Reduce overdraw
+        scene.autoClear = true;
+        scene.autoClearDepthAndStencil = true;
+
+        // ✅ Use incremental rendering to avoid blocking the main thread
+        scene.blockMaterialDirtyMechanism = true;
 
         const loadAllModels = async () => {
-            const organizedMap = organizeByCompartments();
-            setOrganizedCompartments(organizedMap);
-            setLoadedCompartments({});
-            const compartments = {};
-            const totalFiles = Object.values(organizedMap).reduce((total, compartment) => 
-                total + Object.keys(compartment.components).length, 0
-            );
+            let allFiles = [];
+            Object.values(initialOrganizedCompartments).forEach(compartment => {
+                Object.values(compartment.components).forEach(comp => {
+                    allFiles.push({
+                        type: comp.type,
+                        data: comp,
+                        compartmentName: compartment.compartmentName
+                    });
+                });
+            });
+
+            setLoadingProgress({ loaded: 0, total: allFiles.length });
             
-            setLoadingProgress({ loaded: 0, total: totalFiles });
-
-            let loadedCount = 0;
             let allMeshes = [];
-            const failedFiles = [];
+            
+            const newLoadedCompartments = {};
+            Object.keys(initialOrganizedCompartments).forEach(k => {
+                newLoadedCompartments[k] = { ...initialOrganizedCompartments[k], loadedComponents: {} };
+            });
 
-            // Initialize visibility for all compartments
+            const results = await Promise.all(
+                allFiles.map(async ({ type, data, compartmentName }) => {
+                    const result = await loadGLBFile(scene, data.path, compartmentName, data.name, type);
+                    setLoadingProgress(prev => ({ ...prev, loaded: prev.loaded + 1 }));
+                    return { type, data, result, compartmentName };
+                })
+            );
+
+            results.forEach(({ type, data, result, compartmentName }) => {
+                if (result.success) {
+                    newLoadedCompartments[compartmentName].loadedComponents[type] = {
+                        ...data,
+                        meshes: result.meshes
+                    };
+                    allMeshes.push(...result.meshes);
+                }
+            });
+
+            setLoadedCompartments(newLoadedCompartments);
+            // Set the ref so we can safely dispose them later if a single compartment is clicked
+            loadedCompartmentsRef.current = newLoadedCompartments;
+            
             const initialVisibility = {};
-            Object.keys(organizedMap).forEach(compartmentName => {
+            Object.keys(newLoadedCompartments).forEach(compartmentName => {
                 initialVisibility[compartmentName] = true;
             });
             setCompartmentVisibility(initialVisibility);
 
-            for (const [compartmentName, compartmentData] of Object.entries(organizedMap)) {
-                compartments[compartmentName] = {
-                    ...compartmentData,
-                    loadedComponents: {}
-                };
-            }
-
-            const fileQueue = [];
-            Object.entries(organizedMap).forEach(([compartmentName, compartmentData]) => {
-                Object.entries(compartmentData.components).forEach(([componentType, componentData]) => {
-                    fileQueue.push({ compartmentName, componentType, componentData });
-                });
-            });
-
-            let queueIndex = 0;
-            while (queueIndex < fileQueue.length) {
-                const fpsNow = Math.round(engine.getFps ? engine.getFps() : 0);
-                const adaptiveParallelism = getAdaptiveParallelism(fpsNow || 0);
-                setLoadingFps(fpsNow || 0);
-                setLoadingParallelism(adaptiveParallelism);
-
-                const batch = fileQueue.slice(queueIndex, queueIndex + adaptiveParallelism);
-                const loadResults = await Promise.all(
-                    batch.map(async ({ compartmentName, componentType, componentData }) => {
-                        const result = await loadGLBFile(
-                            scene,
-                            componentData.path,
-                            compartmentName,
-                            componentData.name,
-                            componentType
-                        );
-                        return { compartmentName, componentType, componentData, result };
-                    })
-                );
-
-                loadResults.forEach(({ compartmentName, componentType, componentData, result }) => {
-                    if (result.success) {
-                        compartments[compartmentName].loadedComponents[componentType] = {
-                            ...componentData,
-                            meshes: result.meshes
-                        };
-                        allMeshes.push(...result.meshes);
-                    } else {
-                        failedFiles.push({
-                            compartmentName,
-                            componentType,
-                            filePath: componentData.path
-                        });
-                    }
-
-                    loadedCount++;
-                    setLoadingProgress({ loaded: loadedCount, total: totalFiles });
-
-                    // Publish partial results so sidebar hullparts appear while loading.
-                    setLoadedCompartments((prev) => ({
-                        ...prev,
-                        [compartmentName]: compartments[compartmentName]
-                    }));
-                });
-
-                queueIndex += batch.length;
-                await waitNextFrame();
-            }
-
-            try {
-                // Wait for Babylon to finish preparing the scene (materials/textures).
-                if (typeof scene.whenReadyAsync === 'function') {
-                    await scene.whenReadyAsync();
-                }
-            } catch (e) {
-                console.warn('Babylon scene readiness wait failed:', e);
-            }
-
-            // Center the model after all components are loaded
             if (allMeshes.length > 0) {
-                centerModel(scene, allMeshes, camera);
+                setTimeout(() => {
+                    const scene = sceneRef.current;
+                    if (!scene) return;
+                    centerModel(scene, allMeshes, scene.activeCamera);
+                }, 500);
             }
-
-            setLoadedCompartments(compartments);
-            setLoadingParallelism(1);
-            setLoadingFps(0);
-
-            if (failedFiles.length > 0) {
-                console.warn(`GLB load failures (${failedFiles.length}/${totalFiles}):`, failedFiles);
-            }
+            
+            setTimeout(() => setLoadingProgress({ loaded: 0, total: 0 }), 500);
         };
 
         loadAllModels();
@@ -950,8 +928,10 @@ const BabylonScene = () => {
         // Cleanup function
         return () => {
             window.removeEventListener('resize', handleResize);
-            canvas.removeEventListener('contextmenu', handleContextMenu);
-            canvas.removeEventListener('pointerdown', handleCanvasClick);
+            canvas.removeEventListener('pointerdown', onPointerDown);
+            canvas.removeEventListener('pointermove', onPointerMove);
+            canvas.removeEventListener('pointerup', onPointerUp);
+            canvas.removeEventListener('contextmenu', onContextMenuEvent);
             scene.dispose();
             engine.dispose();
         };
@@ -1021,13 +1001,15 @@ const BabylonScene = () => {
 
     // Apply highlighting and visibility for 3-Level View System
     useEffect(() => {
+        if (Object.keys(loadedCompartments).length === 0) return;
+        
         Object.values(loadedCompartments).forEach(compartment => {
             Object.values(compartment.loadedComponents).forEach(component => {
                 if (component.meshes) {
                     component.meshes.forEach(mesh => {
                         if (mesh.material) {
                             // Create unique part ID for individual mesh selection
-                            const partName = mesh.name || `unnamed_${Math.random().toString(36).substr(2, 9)}`;
+                            const partName = mesh.name || `unnamed_${mesh.id}`;
                             const partId = `${compartment.compartmentName}-${partName}`;
                             
                             // Determine visibility based on 3-level view system
@@ -1080,6 +1062,29 @@ const BabylonScene = () => {
                                     mesh.material.emissiveColor = new Color3(0, 0, 0);
                                     mesh.material.emissiveIntensity = 0;
                                 }
+
+                                // White edge highlight for selected part
+                                const componentType = component.type;
+                                if (isPartSelected) {
+                                    // Enable bright edge rendering for selected part
+                                    if (!mesh._edgesRendererEnabled) {
+                                        mesh.enableEdgesRendering(0.9, true);
+                                    }
+                                    mesh.edgesWidth = 6.0;
+                                    mesh.edgesColor = new Color4(1, 1, 1, 1.0);  // solid white
+                                } else if (componentType === 'shells' || componentType === 'shell') {
+                                    // Keep subtle grid edges on shells
+                                    if (!mesh._edgesRendererEnabled) {
+                                        mesh.enableEdgesRendering(0.9, true);
+                                    }
+                                    mesh.edgesWidth = 2.0;
+                                    mesh.edgesColor = new Color4(1, 1, 1, 0.85);
+                                } else {
+                                    // Disable edges on non-shell, non-selected
+                                    if (mesh._edgesRenderer) {
+                                        mesh.disableEdgesRendering();
+                                    }
+                                }
                             } else {
                                 // Reset emissive but preserve component color
                                 mesh.material.emissiveColor = new Color3(0, 0, 0);
@@ -1124,6 +1129,72 @@ const BabylonScene = () => {
 
     const isLoading = loadingProgress.total > 0 && loadingProgress.loaded < loadingProgress.total;
 
+    const getFunctionalityGroup = (name) => {
+        if (!name) return '';
+        const upper = name.toUpperCase();
+        if (/^CARGO_TANK/.test(upper)) return 'Cargo';
+        if (/^AFT_PEAK/.test(upper)) return 'Aft Peak';
+        if (/^FORE_PEAK/.test(upper)) return 'Fore Peak';
+        if (/^ENGINE_ROOM/.test(upper)) return 'Engine Room';
+        if (/^CHAIN_LOCKER/.test(upper)) return 'Chain Locker';
+        if (/^DISTILLED_WATER/.test(upper)) return 'Distilled Water';
+        if (/^FWD_DEEP/.test(upper)) return 'Fwd Deep';
+        if (/^POTABLE_WATER/.test(upper)) return 'Potable Water';
+        if (/^PUMP_ROOM/.test(upper)) return 'Pump Room';
+        if (/^SLOP_TANK/.test(upper)) return 'Slop Tank';
+        if (/^STEERING_GEAR/.test(upper)) return 'Steering Gear';
+        if (/^STERN_TB/.test(upper)) return 'Stern TB';
+        if (/^STORAGE_SPACES/.test(upper)) return 'Storage Spaces';
+        return name.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+    };
+
+    const renderBreadcrumbs = () => {
+        let crumbs = [
+            <span key="root" style={{color: '#4DA2FF', cursor: 'pointer', transition: 'color 0.2s'}} 
+                  onClick={handleReset}
+                  onMouseEnter={e => e.target.style.color = '#73bbff'}
+                  onMouseLeave={e => e.target.style.color = '#4DA2FF'}>
+                TEST FPSO
+            </span>
+        ];
+        
+        if (selectedCompartment && viewMode !== 'asset') {
+            const funcGroup = getFunctionalityGroup(selectedCompartment);
+            if (funcGroup) {
+                crumbs.push(<span key="sep1" style={{margin: '0 8px', color: 'rgba(255,255,255,0.4)'}}>/</span>);
+                crumbs.push(<span key="func" style={{color: '#4DA2FF'}}>{funcGroup}</span>);
+            }
+            
+            crumbs.push(<span key="sep2" style={{margin: '0 8px', color: 'rgba(255,255,255,0.4)'}}>/</span>);
+            crumbs.push(
+                <span key="comp" 
+                      style={{color: selectedPart ? '#4DA2FF' : 'rgba(255,255,255,0.92)', cursor: selectedPart ? 'pointer' : 'default', transition: 'color 0.2s'}} 
+                      onClick={() => selectedPart && handleCompartmentSelectRef.current?.(selectedCompartment, null, null, false, null, null)}
+                      onMouseEnter={e => selectedPart && (e.target.style.color = '#73bbff')}
+                      onMouseLeave={e => selectedPart && (e.target.style.color = '#4DA2FF')}>
+                    {selectedCompartment.replace(/_/g, ' ')}
+                </span>
+            );
+            
+            if (selectedPart) {
+                const partName = selectedPart.includes('-') ? selectedPart.split('-').slice(1).join('-') : selectedPart;
+                crumbs.push(<span key="sep3" style={{margin: '0 8px', color: 'rgba(255,255,255,0.4)'}}>/</span>);
+                crumbs.push(<span key="part" style={{color: 'rgba(255,255,255,0.92)'}}>{partName}</span>);
+            }
+        } else {
+            crumbs.push(<span key="sep1" style={{margin: '0 8px', color: 'rgba(255,255,255,0.4)'}}>/</span>);
+            crumbs.push(<span key="full" style={{color: 'rgba(255,255,255,0.92)'}}>Full Asset</span>);
+        }
+        
+        return <div style={{ 
+            display: 'flex',
+            alignItems: 'center',
+            fontSize: 14,
+            fontWeight: 600,
+            whiteSpace: 'nowrap'
+        }}>{crumbs}</div>;
+    };
+
     return (
         <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
             <div
@@ -1143,70 +1214,91 @@ const BabylonScene = () => {
                 }}
             >
                 <img src="/images/logo.svg" alt="ABS" style={{ height: 26 }} />
-                <div style={{ color: 'rgba(255,255,255,0.92)', fontWeight: 800, fontSize: 14 }}>Full Asset</div>
+                {renderBreadcrumbs()}
             </div>
 
             <canvas
                 ref={canvasRef}
                 style={{
                     position: 'fixed',
-                    top: 0,
+                    top: HEADER_HEIGHT,
                     left: SIDEBAR_WIDTH,
-                    width: `calc(100% - ${SIDEBAR_WIDTH + RIGHT_RAIL_WIDTH}px)`,
-                    marginTop: HEADER_HEIGHT,
+                    width: `calc(100% - ${SIDEBAR_WIDTH}px)`,
                     height: `calc(100vh - ${HEADER_HEIGHT}px)`,
                     display: 'block',
                     outline: 'none',
                     touchAction: 'none',
-                    background: 'transparent',
+                    background: 'linear-gradient(180deg, #dce8f0 0%, #c8dae8 100%)',
                     zIndex: 1
                 }}
             />
 
+            {Object.keys(loadedCompartments).length === 0 && !isLoading && (
+                <div style={{
+                    position: 'fixed',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    zIndex: 500,
+                    textAlign: 'center',
+                    pointerEvents: 'none',
+                    color: '#5a7fa8',
+                    fontFamily: 'Inter, system-ui, sans-serif'
+                }}>
+                    <svg width="64" height="64" fill="none" stroke="currentColor"
+                        strokeWidth="1.2" viewBox="0 0 24 24"
+                        style={{ opacity: 0.4, marginBottom: 16 }}>
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                        <polyline points="9 22 9 12 15 12 15 22"/>
+                    </svg>
+                    <div style={{ fontSize: 16, fontWeight: 600, opacity: 0.6 }}>
+                        Select a compartment from the sidebar
+                    </div>
+                    <div style={{ fontSize: 13, opacity: 0.4, marginTop: 6 }}>
+                        Click any compartment name to load its 3D model
+                    </div>
+                </div>
+            )}
+
             {isLoading && (
-                <div
-                    style={{
-                        position: 'fixed',
-                        left: '50%',
-                        bottom: 24,
-                        transform: 'translateX(-50%)',
-                        zIndex: 10000,
-                        background: '#ffffff',
-                        color: '#0D47A1',
-                        borderRadius: 9999,
-                        padding: '18px 28px',
-                        textAlign: 'center',
-                        boxShadow: '0 18px 40px rgba(13, 71, 161, 0.14)',
-                        minWidth: '420px',
-                        maxWidth: '92vw',
-                        border: '1px solid rgba(13, 71, 161, 0.10)'
-                    }}
-                >
-                    <div style={{ fontSize: 16, fontWeight: 800, letterSpacing: 0.2, marginBottom: 12 }}>
-                        Please Wait Model is loading ....
+                <div style={{
+                    position: 'fixed',
+                    left: '50%',
+                    bottom: 24,
+                    transform: 'translateX(-50%)',
+                    zIndex: 10000,
+                    background: '#ffffff',
+                    color: '#0D47A1',
+                    borderRadius: 9999,
+                    padding: '16px 28px',
+                    boxShadow: '0 18px 40px rgba(13,71,161,0.14)',
+                    minWidth: '360px',
+                    border: '1px solid rgba(13,71,161,0.10)',
+                    fontFamily: 'Inter, system-ui, sans-serif'
+                }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, textAlign: 'center' }}>
+                        Loading compartment...
                     </div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: '#266fb8', marginBottom: 10 }}>
-                        FPS-aware loader: {loadingFps || '--'} FPS | Parallel loads: {loadingParallelism}
+
+                    {/* ✅ Show individual file progress */}
+                    <div style={{ fontSize: 12, color: '#666', textAlign: 'center', marginBottom: 10 }}>
+                        {loadingProgress.loaded} of {loadingProgress.total} files loaded
                     </div>
-                    <div
-                        style={{
-                            position: 'relative',
-                            width: '100%',
-                            height: 9,
-                            background: 'rgba(25, 118, 210, 0.12)',
+
+                    <div style={{
+                        width: '100%', height: 6,
+                        background: 'rgba(25,118,210,0.12)',
+                        borderRadius: 9999, overflow: 'hidden'
+                    }}>
+                        <div style={{
+                            width: `${loadingProgress.total > 0
+                                ? (loadingProgress.loaded / loadingProgress.total) * 100
+                                : 0}%`,
+                            height: '100%',
+                            background: 'linear-gradient(90deg, #1976D2, #0D47A1)',
                             borderRadius: 9999,
-                            overflow: 'hidden'
-                        }}
-                    >
-                        <div
-                            style={{
-                                width: `${Math.max(0, Math.min(100, loadingProgress.total > 0 ? (loadingProgress.loaded / loadingProgress.total) * 100 : 0))}%`,
-                                height: '100%',
-                                background: 'linear-gradient(90deg, #1a87c9, #1976D2)',
-                                borderRadius: 9999,
-                                transition: 'width 0.25s ease'
-                            }}
-                        />
+                            transition: 'width 0.2s ease'
+                        }} />
                     </div>
                 </div>
             )}
@@ -1252,52 +1344,7 @@ const BabylonScene = () => {
                 />
             )}
 
-            <div
-                style={{
-                    position: 'fixed',
-                    top: HEADER_HEIGHT,
-                    right: 0,
-                    width: RIGHT_RAIL_WIDTH,
-                    height: `calc(100vh - ${HEADER_HEIGHT}px)`,
-                    padding: '14px 12px',
-                    background: 'linear-gradient(180deg, rgba(8,35,59,0.98) 0%, rgba(4,21,38,0.98) 100%)',
-                    borderLeft: '1px solid rgba(255,255,255,0.10)',
-                    zIndex: 4000,
-                    color: 'rgba(255,255,255,0.92)',
-                    boxShadow: '-8px 0 24px rgba(0,0,0,0.18)'
-                }}
-            >
-                <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 10, color: 'rgba(255,255,255,0.72)' }}>
-                    Component Types
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                    {['plates', 'shells', 'brackets', 'stiffeners'].map((componentType) => {
-                        const enabled = componentTypeVisibility[componentType];
-                        const active = selectedComponentType === componentType;
-                        return (
-                            <button
-                                key={componentType}
-                                onClick={() => {
-                                    toggleComponentTypeVisibility(componentType);
-                                    handleSelectComponentType(componentType);
-                                }}
-                                style={{
-                                    padding: '9px 8px',
-                                    borderRadius: 8,
-                                    border: `1px solid ${active ? 'rgba(26,135,201,0.70)' : 'rgba(255,255,255,0.18)'}`,
-                                    background: active ? '#1a87c9' : 'rgba(0,0,0,0.55)',
-                                    color: enabled ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.55)',
-                                    cursor: 'pointer',
-                                    fontWeight: 700,
-                                    fontSize: 12
-                                }}
-                            >
-                                <span style={{ textTransform: 'capitalize' }}>{componentType}</span>
-                            </button>
-                        );
-                    })}
-                </div>
-            </div>
+
 
             <ContextMenu
                 position={contextMenu.position}

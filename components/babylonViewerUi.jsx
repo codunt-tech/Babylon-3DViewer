@@ -878,6 +878,10 @@ const AnomalyDialog = React.memo(({ visible, partName, onSave, onCancel, existin
 // Utility function to map emoji icon names to SVG React elements
 const getMenuIconSVG = (icon) => {
   switch (icon) {
+    case '⛶':
+      return (<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M4 8V4h4M16 4h4v4M4 16v4h4M16 20h4v-4"/></svg>);
+    case '📏':
+      return (<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 21L3 3M21 3l-18 18"/></svg>);
     case '📦': // Box/compartment
       return (<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>);
     case '👁️': // Eye
@@ -904,233 +908,114 @@ const getMenuIconSVG = (icon) => {
   }
 };
 
-const ContextMenu = React.memo(({ position, visible, selectedCompartment, selectedPart, selectedComponentType, compartmentViewMode, viewMode, onClose, onAction, anomalies }) => {
-  if (!visible) return null
+const ContextMenu = React.memo(({ position, visible, selectedCompartment, selectedPart,
+    viewMode, onClose, onAction, anomalies }) => {
+    if (!visible) return null;
 
-  const isPartSelected = selectedPart && typeof selectedPart === 'string'
-  const isCompartmentSelected = selectedCompartment
-  const hasAnomaly = isPartSelected && anomalies && anomalies.has(selectedPart)
-  
-  let displayName, displayTitle, menuItems
+    const isPartSelected = !!(selectedPart && typeof selectedPart === 'string');
+    const hasAnomaly = isPartSelected && anomalies?.has(selectedPart);
 
-  if (viewMode === 'asset') {
-    displayName = selectedCompartment
-    displayTitle = 'ASSET VIEW'
-    
-    if (isCompartmentSelected) {
-      menuItems = [
-        { label: 'Compartment View', action: 'compartmentView', icon: '📦' },
-        { label: 'Hide Compartment', action: 'hide', icon: '👁️‍🗨️' },
-        { label: 'Show All', action: 'showAll', icon: '👁️' }
-      ]
+    // Build menu based on current view
+    let title, subtitle, menuItems;
+
+    if (viewMode === 'asset') {
+        title = 'Asset View';
+        subtitle = selectedCompartment?.replace(/_/g, ' ') || 'No selection';
+        menuItems = selectedCompartment ? [
+            { label: 'Compartment View', action: 'compartmentView', icon: '📦' },
+            { label: 'Fit To Screen',    action: 'fitToScreen',     icon: '🔲' },
+            { label: 'Hide',             action: 'hide',            icon: '👁️' },
+        ] : [
+            { label: 'Fit To Screen',    action: 'fitToScreen',     icon: '🔲' },
+        ];
+
+    } else if (viewMode === 'compartment') {
+        title = 'Compartment View';
+        subtitle = isPartSelected
+            ? selectedPart.split('-').slice(1).join('-')
+            : selectedCompartment?.replace(/_/g, ' ') || '';
+        menuItems = [
+            { label: 'Asset View',    action: 'backToAsset',    icon: '🚢' },
+            { label: 'Hullpart View', action: 'hullPartView',   icon: '🔧' },
+            { label: 'Fit To Screen', action: 'fitToScreen',    icon: '🔲' },
+            hasAnomaly
+                ? { label: 'Edit Anomaly',   action: 'editAnomaly',   icon: '✏️' }
+                : { label: 'Anomaly',        action: 'createAnomaly', icon: '⚠️' },
+            { label: 'Hide',          action: 'hide',           icon: '👁️' },
+        ];
+
     } else {
-      menuItems = [
-        { label: 'Show All', action: 'showAll', icon: '👁️' }
-      ]
+        title = 'Hullpart View';
+        subtitle = isPartSelected
+            ? selectedPart.split('-').slice(1).join('-')
+            : '';
+        menuItems = [
+            { label: 'Asset View',       action: 'backToAsset',       icon: '🚢' },
+            { label: 'Compartment View', action: 'backToCompartment', icon: '📦' },
+            { label: 'Fit To Screen',    action: 'fitToScreen',       icon: '🔲' },
+            hasAnomaly
+                ? { label: 'Edit Anomaly', action: 'editAnomaly',   icon: '✏️' }
+                : { label: 'Anomaly',      action: 'createAnomaly', icon: '⚠️' },
+            { label: 'Hide',             action: 'hide',              icon: '👁️' },
+        ];
     }
-    
-  } else if (viewMode === 'compartment') {
-    displayTitle = 'COMPARTMENT VIEW'
-    
-    if (isPartSelected) {
-      displayName = selectedPart
-      menuItems = hasAnomaly ? [
-        { label: 'Hull Part View', action: 'hullPartView', icon: '🔧' },
-        { label: 'Edit Anomaly', action: 'editAnomaly', icon: '✏️' },
-        { label: 'Remove Anomaly', action: 'removeAnomaly', icon: '🗑️' },
-        { label: 'Hide Part', action: 'hide', icon: '🎭' },
-        { label: 'Show All Parts', action: 'showAll', icon: '👁️' },
-        { label: 'Back to Asset View', action: 'backToAsset', icon: '🔙' }
-      ] : [
-        { label: 'Hull Part View', action: 'hullPartView', icon: '🔧' },
-        { label: 'Create Anomaly', action: 'createAnomaly', icon: '⚠️' },
-        { label: 'Hide Part', action: 'hide', icon: '🎭' },
-        { label: 'Show All Parts', action: 'showAll', icon: '👁️' },
-        { label: 'Back to Asset View', action: 'backToAsset', icon: '🔙' }
-      ]
-    } else {
-      displayName = selectedCompartment
-      menuItems = anomalies && anomalies.size > 0 ? [
-        { label: 'View All Anomalies', action: 'viewAnomalies', icon: '📋' },
-        { label: 'Clear All Anomalies', action: 'clearAllAnomalies', icon: '🧹' },
-        { label: 'Show All Parts', action: 'showAll', icon: '👁️' },
-        { label: 'Back to Asset View', action: 'backToAsset', icon: '🔙' }
-      ] : [
-        { label: 'Show All Parts', action: 'showAll', icon: '👁️' },
-        { label: 'Back to Asset View', action: 'backToAsset', icon: '🔙' }
-      ]
-      
-      // Add component type selection options
-      if (selectedComponentType) {
-        menuItems.unshift({ label: `Hull Part View (${selectedComponentType})`, action: 'hullPartView', icon: '🔧' })
-      }
-    }
-    
-  } else {
-    displayName = selectedComponentType || selectedPart
-    displayTitle = 'HULL PART VIEW'
-    
-    if (isPartSelected) {
-      const hasAnomaly = anomalies && anomalies.has(selectedPart)
-      menuItems = hasAnomaly ? [
-        { label: 'Edit Anomaly', action: 'editAnomaly', icon: '✏️' },
-        { label: 'Remove Anomaly', action: 'removeAnomaly', icon: '🗑️' },
-        { label: 'Show All Parts', action: 'showAll', icon: '👁️' },
-        { label: 'Back to Compartment View', action: 'backToCompartment', icon: '🔙' },
-        { label: 'Back to Asset View', action: 'backToAsset', icon: '🔙' }
-      ] : [
-        { label: 'Create Anomaly', action: 'createAnomaly', icon: '⚠️' },
-        { label: 'Show All Parts', action: 'showAll', icon: '👁️' },
-        { label: 'Back to Compartment View', action: 'backToCompartment', icon: '🔙' },
-        { label: 'Back to Asset View', action: 'backToAsset', icon: '🔙' }
-      ]
-    } else {
-      menuItems = [
-        { label: 'Show All Parts', action: 'showAll', icon: '👁️' },
-        { label: 'Back to Compartment View', action: 'backToCompartment', icon: '🔙' },
-        { label: 'Back to Asset View', action: 'backToAsset', icon: '🔙' }
-      ]
-    }
-  }
-  
-  const partDisplayName = isPartSelected && selectedPart && typeof selectedPart === 'string' && selectedPart.includes('-') ? 
-    selectedPart.split('-').slice(1).join('-') : selectedPart || 'Unknown Part'
 
-  const getViewModeColor = () => {
-    switch(viewMode) {
-      case 'asset': return DESIGN_SYSTEM.colors.primary[500]
-      case 'compartment': return DESIGN_SYSTEM.colors.primary[600]
-      case 'hullPart': return DESIGN_SYSTEM.colors.primary[700]
-      default: return DESIGN_SYSTEM.colors.primary[500]
-    }
-  }
-
-  const formatDisplayName = (name) => {
-    if (!name) return 'No Selection'
-    return name.replace(/_/g, ' ')
-  }
-
-  return (
-    <div
-      style={{
-        position: 'fixed',
-        left: `${position.x}px`,
-        top: `${position.y}px`,
-        background: DESIGN_SYSTEM.colors.neutral[50],
-        border: `1px solid ${DESIGN_SYSTEM.colors.neutral[200]}`,
-        borderRadius: DESIGN_SYSTEM.borderRadius.xl,
-        padding: 0,
-        minWidth: '280px',
-        zIndex: 10000,
-        fontFamily: DESIGN_SYSTEM.typography.fontFamily,
-        color: DESIGN_SYSTEM.colors.neutral[900],
-        boxShadow: DESIGN_SYSTEM.shadow.xl,
-        backdropFilter: 'blur(12px)',
-        overflow: 'hidden',
-        animation: 'contextMenuSlideIn 0.15s ease-out'
-      }}
-    >
-      {/* Header */}
-      <div style={{
-        padding: DESIGN_SYSTEM.spacing.lg,
-        background: `linear-gradient(135deg, ${getViewModeColor()}15, ${getViewModeColor()}05)`,
-        borderBottom: `1px solid ${DESIGN_SYSTEM.colors.neutral[200]}`
-      }}>
+    return (
         <div style={{
-          fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-          color: getViewModeColor(),
-          fontWeight: DESIGN_SYSTEM.typography.fontWeight.bold,
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-          marginBottom: DESIGN_SYSTEM.spacing.xs
-      }}>
-        {displayTitle}
-      </div>
-      
-      <div style={{
-          fontSize: DESIGN_SYSTEM.typography.fontSize.xs,
-          color: DESIGN_SYSTEM.colors.neutral[600],
-          fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium,
-          lineHeight: DESIGN_SYSTEM.typography.lineHeight.relaxed
-      }}>
-        {isPartSelected ? (
-          <>
-              <div style={{ marginBottom: DESIGN_SYSTEM.spacing.xs }}>
-                <span style={{ color: DESIGN_SYSTEM.colors.neutral[500] }}>Compartment:</span> {formatDisplayName(selectedCompartment)}
-              </div>
-              <div>
-                <span style={{ color: DESIGN_SYSTEM.colors.neutral[500] }}>Component:</span> {partDisplayName}
-              </div>
-          </>
-        ) : viewMode === 'hullPart' && selectedComponentType ? (
-          <>
-              <div style={{ marginBottom: DESIGN_SYSTEM.spacing.xs }}>
-                <span style={{ color: DESIGN_SYSTEM.colors.neutral[500] }}>Compartment:</span> {formatDisplayName(selectedCompartment)}
-              </div>
-              <div>
-                <span style={{ color: DESIGN_SYSTEM.colors.neutral[500] }}>Component Type:</span> {selectedComponentType.charAt(0).toUpperCase() + selectedComponentType.slice(1)}
-              </div>
-          </>
-        ) : (
-            <div>{formatDisplayName(selectedCompartment) || 'No Selection'}</div>
-        )}
+            position: 'fixed',
+            left: position.x,
+            top: position.y,
+            background: 'rgba(255,255,255,0.97)',
+            borderRadius: 12,
+            boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+            minWidth: 220,
+            zIndex: 10000,
+            overflow: 'hidden',
+            fontFamily: 'Inter, system-ui, sans-serif',
+            border: '1px solid rgba(0,0,0,0.08)',
+            animation: 'contextMenuSlideIn 0.12s ease-out'
+        }}>
+            {/* Header */}
+            <div style={{ padding: '12px 16px 10px', borderBottom: '1px solid #f0f0f0' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#2196F3',
+                    textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 2 }}>
+                    {title}
+                </div>
+                <div style={{ fontSize: 12, color: '#888', fontWeight: 500 }}>
+                    {subtitle}
+                </div>
+            </div>
+
+            {/* Items */}
+            <div style={{ padding: '6px 0' }}>
+                {menuItems.map((item, i) => (
+                    <div
+                        key={i}
+                        onClick={() => { onAction(item.action); onClose(); }}
+                        style={{
+                            padding: '10px 16px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            fontSize: 13,
+                            fontWeight: 500,
+                            color: '#222',
+                            transition: 'background 0.12s'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = '#f5f8ff'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                        <span style={{ fontSize: 16, width: 20, textAlign: 'center' }}>
+                            {getMenuIconSVG(item.icon) || item.icon}
+                        </span>
+                        {item.label}
+                    </div>
+                ))}
+            </div>
         </div>
-      </div>
-      
-      {/* Menu Items */}
-      <div style={{ padding: DESIGN_SYSTEM.spacing.sm }}>
-      {menuItems.map((item, index) => (
-        <div
-          key={index}
-          style={{
-              padding: DESIGN_SYSTEM.spacing.md,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-              gap: DESIGN_SYSTEM.spacing.md,
-              borderRadius: DESIGN_SYSTEM.borderRadius.md,
-              transition: DESIGN_SYSTEM.animation.hover,
-              fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium,
-              color: DESIGN_SYSTEM.colors.neutral[700],
-              margin: `${DESIGN_SYSTEM.spacing.xs} 0`
-          }}
-          onMouseEnter={(e) => {
-              e.target.style.backgroundColor = `${getViewModeColor()}10`
-              e.target.style.color = getViewModeColor()
-              e.target.style.transform = 'translateX(4px)'
-          }}
-          onMouseLeave={(e) => {
-            e.target.style.backgroundColor = 'transparent'
-              e.target.style.color = DESIGN_SYSTEM.colors.neutral[700]
-              e.target.style.transform = 'translateX(0)'
-          }}
-          onClick={() => {
-            onAction(item.action, displayName)
-            onClose()
-          }}
-        >
-            <span style={{ 
-              fontSize: DESIGN_SYSTEM.typography.fontSize.lg,
-              width: '20px',
-              display: 'flex',
-              justifyContent: 'center',
-              flexShrink: 0
-            }}>
-              {getMenuIconSVG(item.icon)}
-            </span>
-            <span style={{ 
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium,
-              flex: 1
-            }}>
-              {item.label}
-            </span>
-        </div>
-      ))}
-      </div>
-    </div>
-  )
-})
+    );
+});
 const HierarchicalSidebar = React.memo(({
   shipData,
   loadedCompartments,
