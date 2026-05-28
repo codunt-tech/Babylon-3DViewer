@@ -5,7 +5,8 @@ import '@babylonjs/core/Cameras/Inputs/arcRotateCameraPointersInput';
 import '@babylonjs/core/Cameras/Inputs/arcRotateCameraKeyboardMoveInput';
 import '@babylonjs/core/Cameras/Inputs/arcRotateCameraMouseWheelInput';
 import { TestFPSOStruc } from '../src/shipData';
-import { AnomalyDialog, AnomalyListDialog, ContextMenu, HierarchicalSidebar } from './babylonViewerUi';
+import { ContextMenu, HierarchicalSidebar } from './babylonViewerUi';
+import { AppHeader, LoadingPill } from './viewerShell';
 
 const getCompartmentNamesFromShipData = () => {
     const names = new Set();
@@ -56,8 +57,6 @@ const BabylonScene = () => {
     const compartmentNames = useMemo(() => getCompartmentNamesFromShipData(), []);
     const [loadedCompartments, setLoadedCompartments] = useState({});
     const [loadingProgress, setLoadingProgress] = useState({ loaded: 0, total: 0 });
-    const [loadingFps, setLoadingFps] = useState(0);
-    const [loadingParallelism, setLoadingParallelism] = useState(1);
     const [organizedCompartments, setOrganizedCompartments] = useState(initialOrganizedCompartments);
     const [compartmentVisibility, setCompartmentVisibility] = useState({});
     const [componentTypeVisibility, setComponentTypeVisibility] = useState({
@@ -77,11 +76,7 @@ const BabylonScene = () => {
     const [isolatedCompartments, setIsolatedCompartments] = useState(new Set());
     const [isolatedParts, setIsolatedParts] = useState(new Set()); // Hull parts
     const [hiddenParts, setHiddenParts] = useState(new Set()); // Individual part hiding
-    const [anomalies, setAnomalies] = useState(new Map());
-    const [anomalyDialog, setAnomalyDialog] = useState({ visible: false, partName: null, existingAnomaly: null });
-    const [anomalyListDialog, setAnomalyListDialog] = useState({ visible: false });
     const [selectedComponentType, setSelectedComponentType] = useState(null);
-    const [currentPartPosition, setCurrentPartPosition] = useState(null);
     const [gaugingPointsEnabled, setGaugingPointsEnabled] = useState(false);
 
     // Keep the latest selection handler without forcing Babylon to re-initialize.
@@ -449,57 +444,6 @@ const BabylonScene = () => {
         }
     }, [viewMode, selectedCompartment]);
 
-    const handleCreateAnomaly = useCallback((partId) => {
-        if (partId && (viewMode === 'compartment' || viewMode === 'hullPart')) {
-            const existingAnomaly = anomalies.get(partId);
-            setAnomalyDialog({
-                visible: true,
-                partName: partId,
-                existingAnomaly: existingAnomaly || null
-            });
-        }
-    }, [viewMode, anomalies]);
-
-    const handleSaveAnomaly = useCallback((partId, anomalyData) => {
-        setAnomalies(prev => {
-            const next = new Map(prev);
-            next.set(partId, {
-                ...anomalyData,
-                createdAt: new Date().toISOString(),
-                partId,
-                position: currentPartPosition || null
-            });
-            return next;
-        });
-        setAnomalyDialog({ visible: false, partName: null, existingAnomaly: null });
-    }, [currentPartPosition]);
-
-    const handleRemoveAnomaly = useCallback((partId) => {
-        setAnomalies(prev => {
-            const next = new Map(prev);
-            next.delete(partId);
-            return next;
-        });
-    }, []);
-
-    const handleClearAllAnomalies = useCallback(() => {
-        setAnomalies(new Map());
-    }, []);
-
-    const handleViewAnomalies = useCallback(() => {
-        setAnomalyListDialog({ visible: true });
-    }, []);
-
-    const handleEditAnomalyFromList = useCallback((partId) => {
-        const existingAnomaly = anomalies.get(partId);
-        setAnomalyListDialog({ visible: false });
-        setAnomalyDialog({
-            visible: true,
-            partName: partId,
-            existingAnomaly: existingAnomaly || null
-        });
-    }, [anomalies]);
-
     // Navigation functions - 3-Level View Flow
     const handleEnterCompartmentView = useCallback(() => {
         if (selectedCompartment && viewMode === 'asset') {
@@ -598,23 +542,6 @@ const BabylonScene = () => {
                 console.log(`⚡ Context Action: Entering Hull Part View`)
                 handleEnterHullPartView()
                 break
-            case 'createAnomaly':
-                handleCreateAnomaly(selectedPart)
-                break
-            case 'editAnomaly':
-                handleCreateAnomaly(selectedPart)
-                break
-            case 'removeAnomaly':
-                if (selectedPart) {
-                    handleRemoveAnomaly(selectedPart)
-                }
-                break
-            case 'clearAllAnomalies':
-                handleClearAllAnomalies()
-                break
-            case 'viewAnomalies':
-                handleViewAnomalies()
-                break
             case 'backToAsset':
                 console.log(`⚡ Context Action: Back to Asset View`)
                 handleBackToAssetView()
@@ -662,11 +589,10 @@ const BabylonScene = () => {
                 handleReset()
                 break
         }
-    }, [viewMode, selectedCompartment, selectedPart, handleEnterCompartmentView, handleEnterHullPartView, handleCreateAnomaly, handleRemoveAnomaly, handleClearAllAnomalies, handleViewAnomalies, handleBackToAssetView, handleBackToCompartmentView, handleHide, handleHidePart, handleShowAll, handleReset])
+    }, [viewMode, selectedCompartment, selectedPart, handleEnterCompartmentView, handleEnterHullPartView, handleBackToAssetView, handleBackToCompartmentView, handleHide, handleHidePart, handleShowAll, handleReset])
 
     // Handle 3-Level selection: Asset → Compartment → Hull Part
-    const handleCompartmentSelect = useCallback((compartmentName, partId, position, isRightClick, clickedMesh, partPosition) => {
-        if (partPosition) setCurrentPartPosition(partPosition);
+    const handleCompartmentSelect = useCallback((compartmentName, partId, position, isRightClick, clickedMesh) => {
 
         // ─── RIGHT CLICK ──────────────────────────────────────────────
         if (isRightClick) {
@@ -1197,24 +1123,8 @@ const BabylonScene = () => {
 
     return (
         <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
-            <div
-                style={{
-                    position: 'fixed',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    height: HEADER_HEIGHT,
-                    background: 'linear-gradient(90deg, #08233b 0%, #041526 100%)',
-                    borderBottom: '1px solid rgba(255,255,255,0.10)',
-                    zIndex: 5000,
-                    display: 'flex',
-                    alignItems: 'center',
-                    padding: '0 16px',
-                    gap: 12
-                }}
-            >
-                <img src="/images/logo.svg" alt="ABS" style={{ height: 26 }} />
-                {renderBreadcrumbs()}
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 5000 }}>
+                <AppHeader breadcrumbs={renderBreadcrumbs()} />
             </div>
 
             <canvas
@@ -1260,48 +1170,7 @@ const BabylonScene = () => {
                 </div>
             )}
 
-            {isLoading && (
-                <div style={{
-                    position: 'fixed',
-                    left: '50%',
-                    bottom: 24,
-                    transform: 'translateX(-50%)',
-                    zIndex: 10000,
-                    background: '#ffffff',
-                    color: '#0D47A1',
-                    borderRadius: 9999,
-                    padding: '16px 28px',
-                    boxShadow: '0 18px 40px rgba(13,71,161,0.14)',
-                    minWidth: '360px',
-                    border: '1px solid rgba(13,71,161,0.10)',
-                    fontFamily: 'Inter, system-ui, sans-serif'
-                }}>
-                    <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, textAlign: 'center' }}>
-                        Loading compartment...
-                    </div>
-
-                    {/* ✅ Show individual file progress */}
-                    <div style={{ fontSize: 12, color: '#666', textAlign: 'center', marginBottom: 10 }}>
-                        {loadingProgress.loaded} of {loadingProgress.total} files loaded
-                    </div>
-
-                    <div style={{
-                        width: '100%', height: 6,
-                        background: 'rgba(25,118,210,0.12)',
-                        borderRadius: 9999, overflow: 'hidden'
-                    }}>
-                        <div style={{
-                            width: `${loadingProgress.total > 0
-                                ? (loadingProgress.loaded / loadingProgress.total) * 100
-                                : 0}%`,
-                            height: '100%',
-                            background: 'linear-gradient(90deg, #1976D2, #0D47A1)',
-                            borderRadius: 9999,
-                            transition: 'width 0.2s ease'
-                        }} />
-                    </div>
-                </div>
-            )}
+            <LoadingPill progress={loadingProgress.loaded} total={loadingProgress.total} />
 
             {Object.keys(organizedCompartments).length > 0 && (
                 <HierarchicalSidebar
@@ -1330,11 +1199,6 @@ const BabylonScene = () => {
                     onSelectComponentType={handleSelectComponentType}
                     selectedComponentType={selectedComponentType}
                     onIsolateCompartment={handleIsolateCompartment}
-                    anomalies={anomalies}
-                    handleViewAnomalies={handleViewAnomalies}
-                    handleEditAnomalyFromList={handleEditAnomalyFromList}
-                    handleRemoveAnomalyFromList={handleRemoveAnomaly}
-                    handleCreateAnomaly={handleCreateAnomaly}
                     gaugingPointsEnabled={gaugingPointsEnabled}
                     setGaugingPointsEnabled={setGaugingPointsEnabled}
                     topOffset={54}
@@ -1356,23 +1220,6 @@ const BabylonScene = () => {
                 viewMode={viewMode}
                 onClose={() => setContextMenu({ visible: false, position: { x: 0, y: 0 } })}
                 onAction={handleContextAction}
-                anomalies={anomalies}
-            />
-
-            <AnomalyDialog
-                visible={anomalyDialog.visible}
-                partName={anomalyDialog.partName}
-                existingAnomaly={anomalyDialog.existingAnomaly}
-                onSave={(anomalyData) => handleSaveAnomaly(anomalyDialog.partName, anomalyData)}
-                onCancel={() => setAnomalyDialog({ visible: false, partName: null, existingAnomaly: null })}
-            />
-
-            <AnomalyListDialog
-                visible={anomalyListDialog.visible}
-                anomalies={anomalies}
-                onClose={() => setAnomalyListDialog({ visible: false })}
-                onEditAnomaly={handleEditAnomalyFromList}
-                onRemoveAnomaly={handleRemoveAnomaly}
             />
         </div>
     );

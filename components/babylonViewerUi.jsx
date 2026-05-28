@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react'
+import { EyeFill, EyeSlashFill } from 'react-bootstrap-icons'
 
 // CSS Animations for Professional UI
 const CSS_ANIMATIONS = `
@@ -209,671 +210,14 @@ const DESIGN_SYSTEM = {
 
 // Inject CSS animations
 if (typeof document !== 'undefined') {
-  const styleSheet = document.createElement('style')
-  styleSheet.type = 'text/css'
-  styleSheet.innerText = CSS_ANIMATIONS
-  document.head.appendChild(styleSheet)
+  if (!document.getElementById('viewer-styles')) {
+    const styleSheet = document.createElement('style')
+    styleSheet.id = 'viewer-styles'
+    styleSheet.type = 'text/css'
+    styleSheet.innerText = CSS_ANIMATIONS
+    document.head.appendChild(styleSheet)
+  }
 }
-const AnomalyListDialog = React.memo(({ visible, anomalies, onClose, onEditAnomaly, onRemoveAnomaly }) => {
-  if (!visible) return null
-
-  const anomalyArray = Array.from(anomalies.entries()).map(([partId, anomalyData]) => ({
-    partId,
-    ...anomalyData
-  }))
-
-  const formatPartName = (partId) => {
-    return partId?.split('-').slice(1).join('-') || 'Unknown Part'
-  }
-
-  const formatCompartmentName = (partId) => {
-    return partId?.split('-')[0]?.replace(/_/g, ' ') || 'Unknown Compartment'
-  }
-
-  return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: 'rgba(0, 0, 0, 0.6)',
-      backdropFilter: 'blur(8px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 20000,
-      animation: 'fadeIn 0.2s ease-out'
-    }}>
-      <div style={{
-        background: DESIGN_SYSTEM.colors.neutral[50],
-        borderRadius: DESIGN_SYSTEM.borderRadius['2xl'],
-        padding: DESIGN_SYSTEM.spacing['3xl'],
-        minWidth: '700px',
-        maxWidth: '900px',
-        maxHeight: '85vh',
-        overflow: 'hidden',
-        boxShadow: DESIGN_SYSTEM.shadow['2xl'],
-        border: `1px solid ${DESIGN_SYSTEM.colors.neutral[200]}`,
-        display: 'flex',
-        flexDirection: 'column',
-        fontFamily: DESIGN_SYSTEM.typography.fontFamily
-      }}>
-        <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: DESIGN_SYSTEM.spacing['2xl'],
-          paddingBottom: DESIGN_SYSTEM.spacing.lg,
-          borderBottom: `1px solid ${DESIGN_SYSTEM.colors.neutral[200]}`
-        }}>
-          <div>
-            <h2 style={{
-              margin: 0,
-              color: DESIGN_SYSTEM.colors.error[700],
-              fontSize: DESIGN_SYSTEM.typography.fontSize['2xl'],
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.bold,
-              lineHeight: DESIGN_SYSTEM.typography.lineHeight.tight,
-              display: 'flex',
-              alignItems: 'center',
-              gap: DESIGN_SYSTEM.spacing.md
-            }}>
-                          <svg width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-              <path d="M12 9v4m0 4h.01"/>
-              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-            </svg>
-            Ship Anomaly Report
-            </h2>
-            <p style={{
-              margin: `${DESIGN_SYSTEM.spacing.sm} 0 0 0`,
-              color: DESIGN_SYSTEM.colors.neutral[600],
-              fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium
-            }}>
-              {anomalyArray.length} {anomalyArray.length === 1 ? 'anomaly' : 'anomalies'} detected across ship components
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'none',
-              border: 'none',
-              fontSize: DESIGN_SYSTEM.typography.fontSize.xl,
-              cursor: 'pointer',
-              color: DESIGN_SYSTEM.colors.neutral[400],
-              padding: DESIGN_SYSTEM.spacing.sm,
-              borderRadius: DESIGN_SYSTEM.borderRadius.md,
-              transition: DESIGN_SYSTEM.animation.hover,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: '32px',
-              height: '32px'
-            }}
-            onMouseEnter={(e) => {
-              e.target.style.backgroundColor = DESIGN_SYSTEM.colors.neutral[100]
-              e.target.style.color = DESIGN_SYSTEM.colors.neutral[600]
-            }}
-            onMouseLeave={(e) => {
-              e.target.style.backgroundColor = 'transparent'
-              e.target.style.color = DESIGN_SYSTEM.colors.neutral[400]
-            }}
-          >
-            ✕
-          </button>
-        </div>
-        
-        <div style={{
-          flex: 1,
-          overflowY: 'auto',
-          maxHeight: '60vh',
-          marginRight: `-${DESIGN_SYSTEM.spacing.lg}`,
-          paddingRight: DESIGN_SYSTEM.spacing.lg
-        }}>
-          {anomalyArray.length === 0 ? (
-            <div style={{
-              textAlign: 'center',
-              padding: DESIGN_SYSTEM.spacing['5xl'],
-              color: DESIGN_SYSTEM.colors.neutral[500],
-              fontSize: DESIGN_SYSTEM.typography.fontSize.base,
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium
-            }}>
-              <svg width="48" height="48" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" style={{ 
-                marginBottom: DESIGN_SYSTEM.spacing.lg,
-                opacity: 0.5
-              }}>
-                <circle cx="11" cy="11" r="8"/>
-                <path d="M21 21l-4.35-4.35"/>
-              </svg>
-              No anomalies detected
-            </div>
-          ) : (
-            anomalyArray.map((anomaly, index) => (
-              <div
-                key={anomaly.partId}
-                style={{
-                  padding: DESIGN_SYSTEM.spacing.xl,
-                  marginBottom: DESIGN_SYSTEM.spacing.lg,
-                  border: `2px solid ${anomaly.color}20`,
-                  borderLeft: `4px solid ${anomaly.color}`,
-                  borderRadius: DESIGN_SYSTEM.borderRadius.xl,
-                  backgroundColor: `${anomaly.color}08`,
-                  transition: DESIGN_SYSTEM.animation.hover,
-                  cursor: 'pointer'
-                }}
-                onMouseEnter={(e) => {
-                  e.target.style.backgroundColor = `${anomaly.color}15`
-                  e.target.style.transform = 'translateY(-1px)'
-                  e.target.style.boxShadow = DESIGN_SYSTEM.shadow.md
-                }}
-                onMouseLeave={(e) => {
-                  e.target.style.backgroundColor = `${anomaly.color}08`
-                  e.target.style.transform = 'translateY(0)'
-                  e.target.style.boxShadow = 'none'
-                }}
-              >
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'flex-start',
-                  gap: DESIGN_SYSTEM.spacing.xl
-                }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{
-                      fontSize: DESIGN_SYSTEM.typography.fontSize.lg,
-                      fontWeight: DESIGN_SYSTEM.typography.fontWeight.semibold,
-                      color: DESIGN_SYSTEM.colors.neutral[900],
-                      marginBottom: DESIGN_SYSTEM.spacing.sm,
-                      lineHeight: DESIGN_SYSTEM.typography.lineHeight.tight
-                    }}>
-                      {formatCompartmentName(anomaly.partId)}
-                    </div>
-                    <div style={{
-                      fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-                      color: DESIGN_SYSTEM.colors.neutral[600],
-                      marginBottom: DESIGN_SYSTEM.spacing.sm,
-                      fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium
-                    }}>
-                      Component: {formatPartName(anomaly.partId)}
-                    </div>
-                    {anomaly.position && (
-                      <div style={{
-                        fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-                        color: DESIGN_SYSTEM.colors.neutral[600],
-                        marginBottom: DESIGN_SYSTEM.spacing.lg,
-                        fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium
-                      }}>
-                        Position: X: {anomaly.position.x}, Y: {anomaly.position.y}, Z: {anomaly.position.z}
-                      </div>
-                    )}
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: DESIGN_SYSTEM.spacing.md,
-                      marginBottom: anomaly.description ? DESIGN_SYSTEM.spacing.lg : 0
-                    }}>
-                      <div style={{
-                        width: '16px',
-                        height: '16px',
-                        borderRadius: '50%',
-                        backgroundColor: anomaly.color,
-                        boxShadow: `0 0 0 2px ${anomaly.color}30`
-                      }}></div>
-                      <span style={{
-                        color: anomaly.color,
-                        fontWeight: DESIGN_SYSTEM.typography.fontWeight.bold,
-                        fontSize: DESIGN_SYSTEM.typography.fontSize.base
-                      }}>
-                        {anomaly.label}
-                      </span>
-                      <span style={{
-                        backgroundColor: `${anomaly.color}20`,
-                        color: anomaly.color,
-                        padding: `${DESIGN_SYSTEM.spacing.xs} ${DESIGN_SYSTEM.spacing.sm}`,
-                        borderRadius: DESIGN_SYSTEM.borderRadius.sm,
-                        fontSize: DESIGN_SYSTEM.typography.fontSize.xs,
-                        fontWeight: DESIGN_SYSTEM.typography.fontWeight.bold
-                      }}>
-                        {anomaly.percentage}%
-                      </span>
-                    </div>
-                    {anomaly.description && (
-                      <div style={{
-                        fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-                        color: DESIGN_SYSTEM.colors.neutral[700],
-                        fontStyle: 'italic',
-                        backgroundColor: DESIGN_SYSTEM.colors.neutral[50],
-                        padding: DESIGN_SYSTEM.spacing.md,
-                        borderRadius: DESIGN_SYSTEM.borderRadius.md,
-                        border: `1px solid ${DESIGN_SYSTEM.colors.neutral[200]}`
-                      }}>
-                        "{anomaly.description}"
-                      </div>
-                    )}
-                  </div>
-                  <div style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: DESIGN_SYSTEM.spacing.sm
-                  }}>
-                    <button
-                      onClick={() => onEditAnomaly(anomaly.partId)}
-                      style={{
-                        padding: `${DESIGN_SYSTEM.spacing.sm} ${DESIGN_SYSTEM.spacing.lg}`,
-                        backgroundColor: DESIGN_SYSTEM.colors.primary[500],
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: DESIGN_SYSTEM.borderRadius.md,
-                        cursor: 'pointer',
-                        fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-                        fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium,
-                        fontFamily: DESIGN_SYSTEM.typography.fontFamily,
-                        transition: DESIGN_SYSTEM.animation.hover,
-                        boxShadow: DESIGN_SYSTEM.shadow.sm,
-                        minWidth: '80px'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.target.style.backgroundColor = DESIGN_SYSTEM.colors.primary[600]
-                        e.target.style.transform = 'translateY(-1px)'
-                        e.target.style.boxShadow = DESIGN_SYSTEM.shadow.md
-                      }}
-                      onMouseLeave={(e) => {
-                        e.target.style.backgroundColor = DESIGN_SYSTEM.colors.primary[500]
-                        e.target.style.transform = 'translateY(0)'
-                        e.target.style.boxShadow = DESIGN_SYSTEM.shadow.sm
-                      }}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => onRemoveAnomaly(anomaly.partId)}
-                      style={{
-                        padding: `${DESIGN_SYSTEM.spacing.sm} ${DESIGN_SYSTEM.spacing.lg}`,
-                        backgroundColor: DESIGN_SYSTEM.colors.error[500],
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: DESIGN_SYSTEM.borderRadius.md,
-                        cursor: 'pointer',
-                        fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-                        fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium,
-                        fontFamily: DESIGN_SYSTEM.typography.fontFamily,
-                        transition: DESIGN_SYSTEM.animation.hover,
-                        boxShadow: DESIGN_SYSTEM.shadow.sm,
-                        minWidth: '80px'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.target.style.backgroundColor = DESIGN_SYSTEM.colors.error[600]
-                        e.target.style.transform = 'translateY(-1px)'
-                        e.target.style.boxShadow = DESIGN_SYSTEM.shadow.md
-                      }}
-                      onMouseLeave={(e) => {
-                        e.target.style.backgroundColor = DESIGN_SYSTEM.colors.error[500]
-                        e.target.style.transform = 'translateY(0)'
-                        e.target.style.boxShadow = DESIGN_SYSTEM.shadow.sm
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  )
-})
-
-const AnomalyDialog = React.memo(({ visible, partName, onSave, onCancel, existingAnomaly }) => {
-  const [damagePercentage, setDamagePercentage] = useState(existingAnomaly?.percentage || 0)
-  const [description, setDescription] = useState(existingAnomaly?.description || '')
-
-  useEffect(() => {
-    if (existingAnomaly) {
-      setDamagePercentage(existingAnomaly.percentage)
-      setDescription(existingAnomaly.description)
-    } else {
-      setDamagePercentage(0)
-      setDescription('')
-    }
-  }, [existingAnomaly, visible])
-
-  if (!visible) return null
-
-  const getDamageColor = (percentage) => {
-    if (percentage === 0) return DESIGN_SYSTEM.colors.success[500]
-    if (percentage <= 25) return '#FFEB3B'
-    if (percentage <= 50) return DESIGN_SYSTEM.colors.warning[500]
-    if (percentage <= 75) return '#FF5722'
-    return DESIGN_SYSTEM.colors.error[700]
-  }
-
-  const getDamageLabel = (percentage) => {
-    if (percentage === 0) return 'No Damage'
-    if (percentage <= 25) return 'Minor Damage'
-    if (percentage <= 50) return 'Moderate Damage'
-    if (percentage <= 75) return 'Severe Damage'
-    return 'Critical Damage'
-  }
-
-  const formatPartName = (partName) => {
-    return partName?.split('-').slice(1).join('-') || 'Unknown Part'
-  }
-
-  const formatCompartmentName = (partName) => {
-    return partName?.split('-')[0]?.replace(/_/g, ' ') || 'Unknown Compartment'
-  }
-
-  return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      backgroundColor: 'rgba(0, 0, 0, 0.6)',
-      backdropFilter: 'blur(8px)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 20000,
-      animation: 'fadeIn 0.2s ease-out'
-    }}>
-      <div style={{
-        background: DESIGN_SYSTEM.colors.neutral[50],
-        borderRadius: DESIGN_SYSTEM.borderRadius['2xl'],
-        padding: DESIGN_SYSTEM.spacing['3xl'],
-        minWidth: '480px',
-        maxWidth: '600px',
-        boxShadow: DESIGN_SYSTEM.shadow['2xl'],
-        border: `1px solid ${DESIGN_SYSTEM.colors.neutral[200]}`,
-        fontFamily: DESIGN_SYSTEM.typography.fontFamily
-      }}>
-        <div style={{
-          marginBottom: DESIGN_SYSTEM.spacing['2xl'],
-          paddingBottom: DESIGN_SYSTEM.spacing.lg,
-          borderBottom: `1px solid ${DESIGN_SYSTEM.colors.neutral[200]}`
-        }}>
-          <h2 style={{
-            margin: 0,
-            color: DESIGN_SYSTEM.colors.error[700],
-            fontSize: DESIGN_SYSTEM.typography.fontSize['2xl'],
-            fontWeight: DESIGN_SYSTEM.typography.fontWeight.bold,
-            lineHeight: DESIGN_SYSTEM.typography.lineHeight.tight,
-            display: 'flex',
-            alignItems: 'center',
-            gap: DESIGN_SYSTEM.spacing.md,
-            marginBottom: DESIGN_SYSTEM.spacing.sm
-          }}>
-            <svg width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24">
-              <path d="M12 9v4m0 4h.01"/>
-              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-            </svg>
-            {existingAnomaly ? 'Edit Anomaly' : 'Create Anomaly'}
-          </h2>
-          <p style={{
-            margin: 0,
-            color: DESIGN_SYSTEM.colors.neutral[600],
-            fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-            fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium
-          }}>
-            Document damage assessment for ship component
-          </p>
-        </div>
-        
-        <div style={{ marginBottom: DESIGN_SYSTEM.spacing.xl }}>
-          <div style={{
-            backgroundColor: DESIGN_SYSTEM.colors.primary[50],
-            padding: DESIGN_SYSTEM.spacing.lg,
-            borderRadius: DESIGN_SYSTEM.borderRadius.lg,
-            border: `1px solid ${DESIGN_SYSTEM.colors.primary[200]}`
-          }}>
-            <div style={{
-              fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-              color: DESIGN_SYSTEM.colors.primary[700],
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium,
-              marginBottom: DESIGN_SYSTEM.spacing.xs
-            }}>
-              Compartment
-            </div>
-            <div style={{
-              fontSize: DESIGN_SYSTEM.typography.fontSize.lg,
-              color: DESIGN_SYSTEM.colors.primary[900],
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.semibold,
-              marginBottom: DESIGN_SYSTEM.spacing.sm
-            }}>
-              {formatCompartmentName(partName)}
-            </div>
-            <div style={{
-              fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-              color: DESIGN_SYSTEM.colors.neutral[600],
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium,
-              marginBottom: DESIGN_SYSTEM.spacing.xs
-            }}>
-              Component: {formatPartName(partName)}
-            </div>
-            {existingAnomaly?.position && (
-              <div style={{
-                fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-                color: DESIGN_SYSTEM.colors.neutral[600],
-                fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium
-              }}>
-                Position: X: {existingAnomaly.position.x}, Y: {existingAnomaly.position.y}, Z: {existingAnomaly.position.z}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div style={{ marginBottom: DESIGN_SYSTEM.spacing['2xl'] }}>
-          <label style={{ 
-            display: 'block', 
-            marginBottom: DESIGN_SYSTEM.spacing.lg, 
-            color: DESIGN_SYSTEM.colors.neutral[900], 
-            fontSize: DESIGN_SYSTEM.typography.fontSize.base, 
-            fontWeight: DESIGN_SYSTEM.typography.fontWeight.semibold
-          }}>
-            Damage Assessment: {damagePercentage}%
-          </label>
-          
-          <div style={{ marginBottom: DESIGN_SYSTEM.spacing.lg }}>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="5"
-              value={damagePercentage}
-              onChange={(e) => setDamagePercentage(parseInt(e.target.value))}
-              style={{
-                width: '100%',
-                height: '12px',
-                borderRadius: DESIGN_SYSTEM.borderRadius.md,
-                background: `linear-gradient(to right, 
-                  ${DESIGN_SYSTEM.colors.success[500]} 0%, 
-                  #FFEB3B 25%, 
-                  ${DESIGN_SYSTEM.colors.warning[500]} 50%, 
-                  #FF5722 75%, 
-                  ${DESIGN_SYSTEM.colors.error[700]} 100%)`,
-                outline: 'none',
-                cursor: 'pointer',
-                WebkitAppearance: 'none',
-                appearance: 'none'
-              }}
-            />
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              marginTop: DESIGN_SYSTEM.spacing.sm,
-              fontSize: DESIGN_SYSTEM.typography.fontSize.xs,
-              color: DESIGN_SYSTEM.colors.neutral[500],
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium
-            }}>
-              <span>0%</span>
-              <span>25%</span>
-              <span>50%</span>
-              <span>75%</span>
-              <span>100%</span>
-            </div>
-          </div>
-          
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: DESIGN_SYSTEM.spacing.lg,
-            padding: DESIGN_SYSTEM.spacing.lg,
-            backgroundColor: `${getDamageColor(damagePercentage)}15`,
-            borderRadius: DESIGN_SYSTEM.borderRadius.lg,
-            border: `2px solid ${getDamageColor(damagePercentage)}40`
-          }}>
-            <div style={{
-              width: '20px',
-              height: '20px',
-              borderRadius: '50%',
-              backgroundColor: getDamageColor(damagePercentage),
-              boxShadow: `0 0 0 3px ${getDamageColor(damagePercentage)}30`,
-              flexShrink: 0
-            }}></div>
-            <div>
-              <div style={{
-                color: getDamageColor(damagePercentage),
-                fontWeight: DESIGN_SYSTEM.typography.fontWeight.bold,
-                fontSize: DESIGN_SYSTEM.typography.fontSize.lg,
-                lineHeight: DESIGN_SYSTEM.typography.lineHeight.tight
-              }}>
-                {getDamageLabel(damagePercentage)}
-              </div>
-              <div style={{
-                color: getDamageColor(damagePercentage),
-                fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-                fontWeight: DESIGN_SYSTEM.typography.fontWeight.medium,
-                opacity: 0.8
-              }}>
-                {damagePercentage}% structural integrity affected
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ marginBottom: DESIGN_SYSTEM.spacing['3xl'] }}>
-          <label style={{ 
-            display: 'block', 
-            marginBottom: DESIGN_SYSTEM.spacing.md, 
-            color: DESIGN_SYSTEM.colors.neutral[900], 
-            fontSize: DESIGN_SYSTEM.typography.fontSize.base, 
-            fontWeight: DESIGN_SYSTEM.typography.fontWeight.semibold
-          }}>
-            Description <span style={{ 
-              color: DESIGN_SYSTEM.colors.neutral[500], 
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.normal,
-              fontSize: DESIGN_SYSTEM.typography.fontSize.sm
-            }}>(Optional)</span>
-          </label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Describe the nature of damage, location details, or repair recommendations..."
-            style={{
-              width: '100%',
-              height: '100px',
-              padding: DESIGN_SYSTEM.spacing.lg,
-              border: `2px solid ${DESIGN_SYSTEM.colors.neutral[300]}`,
-              borderRadius: DESIGN_SYSTEM.borderRadius.lg,
-              fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-              fontFamily: DESIGN_SYSTEM.typography.fontFamily,
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.normal,
-              lineHeight: DESIGN_SYSTEM.typography.lineHeight.relaxed,
-              resize: 'vertical',
-              outline: 'none',
-              transition: DESIGN_SYSTEM.animation.transition,
-              backgroundColor: DESIGN_SYSTEM.colors.neutral[50]
-            }}
-            onFocus={(e) => {
-              e.target.style.borderColor = DESIGN_SYSTEM.colors.primary[500]
-              e.target.style.backgroundColor = 'white'
-              e.target.style.boxShadow = `0 0 0 3px ${DESIGN_SYSTEM.colors.primary[500]}20`
-            }}
-            onBlur={(e) => {
-              e.target.style.borderColor = DESIGN_SYSTEM.colors.neutral[300]
-              e.target.style.backgroundColor = DESIGN_SYSTEM.colors.neutral[50]
-              e.target.style.boxShadow = 'none'
-            }}
-          />
-        </div>
-
-        <div style={{
-          display: 'flex',
-          gap: DESIGN_SYSTEM.spacing.lg,
-          justifyContent: 'flex-end',
-          paddingTop: DESIGN_SYSTEM.spacing.lg,
-          borderTop: `1px solid ${DESIGN_SYSTEM.colors.neutral[200]}`
-        }}>
-          <button
-            onClick={onCancel}
-            style={{
-              padding: `${DESIGN_SYSTEM.spacing.md} ${DESIGN_SYSTEM.spacing['2xl']}`,
-              backgroundColor: 'transparent',
-              color: DESIGN_SYSTEM.colors.neutral[600],
-              border: `2px solid ${DESIGN_SYSTEM.colors.neutral[300]}`,
-              borderRadius: DESIGN_SYSTEM.borderRadius.lg,
-              cursor: 'pointer',
-              fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.semibold,
-              fontFamily: DESIGN_SYSTEM.typography.fontFamily,
-              transition: DESIGN_SYSTEM.animation.hover,
-              minWidth: '100px'
-            }}
-            onMouseEnter={(e) => {
-              e.target.style.backgroundColor = DESIGN_SYSTEM.colors.neutral[100]
-              e.target.style.borderColor = DESIGN_SYSTEM.colors.neutral[400]
-              e.target.style.color = DESIGN_SYSTEM.colors.neutral[700]
-            }}
-            onMouseLeave={(e) => {
-              e.target.style.backgroundColor = 'transparent'
-              e.target.style.borderColor = DESIGN_SYSTEM.colors.neutral[300]
-              e.target.style.color = DESIGN_SYSTEM.colors.neutral[600]
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => onSave({
-              percentage: damagePercentage,
-              description: description.trim(),
-              color: getDamageColor(damagePercentage),
-              label: getDamageLabel(damagePercentage)
-            })}
-            style={{
-              padding: `${DESIGN_SYSTEM.spacing.md} ${DESIGN_SYSTEM.spacing['2xl']}`,
-              backgroundColor: DESIGN_SYSTEM.colors.error[600],
-              color: 'white',
-              border: 'none',
-              borderRadius: DESIGN_SYSTEM.borderRadius.lg,
-              cursor: 'pointer',
-              fontSize: DESIGN_SYSTEM.typography.fontSize.sm,
-              fontWeight: DESIGN_SYSTEM.typography.fontWeight.semibold,
-              fontFamily: DESIGN_SYSTEM.typography.fontFamily,
-              transition: DESIGN_SYSTEM.animation.hover,
-              boxShadow: DESIGN_SYSTEM.shadow.md,
-              minWidth: '140px'
-            }}
-            onMouseEnter={(e) => {
-              e.target.style.backgroundColor = DESIGN_SYSTEM.colors.error[700]
-              e.target.style.transform = 'translateY(-1px)'
-              e.target.style.boxShadow = DESIGN_SYSTEM.shadow.lg
-            }}
-            onMouseLeave={(e) => {
-              e.target.style.backgroundColor = DESIGN_SYSTEM.colors.error[600]
-              e.target.style.transform = 'translateY(0)'
-              e.target.style.boxShadow = DESIGN_SYSTEM.shadow.md
-            }}
-          >
-            {existingAnomaly ? 'Update Anomaly' : 'Create Anomaly'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-})
 
 // Utility function to map emoji icon names to SVG React elements
 const getMenuIconSVG = (icon) => {
@@ -891,12 +235,6 @@ const getMenuIconSVG = (icon) => {
       return (<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M22 2l-7 7m-2 2l-7 7m2-2l7-7"/></svg>);
     case '✏️': // Edit
       return (<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19.5 3 21l1.5-4L16.5 3.5z"/></svg>);
-    case '🗑️': // Trash
-      return (<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>);
-    case '🎭': // Mask/theater
-      return (<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M12 22c4.418 0 8-4.03 8-9V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8c0 4.97 3.582 9 8 9z"/><path d="M8 10h.01M16 10h.01"/></svg>);
-    case '🔙': // Back arrow
-      return (<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7"/></svg>);
     case '⚠️': // Warning
       return (<svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M12 9v4m0 4h.01"/><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>);
     case '📋': // List/report
@@ -909,11 +247,10 @@ const getMenuIconSVG = (icon) => {
 };
 
 const ContextMenu = React.memo(({ position, visible, selectedCompartment, selectedPart,
-    viewMode, onClose, onAction, anomalies }) => {
+    viewMode, onClose, onAction }) => {
     if (!visible) return null;
 
     const isPartSelected = !!(selectedPart && typeof selectedPart === 'string');
-    const hasAnomaly = isPartSelected && anomalies?.has(selectedPart);
 
     // Build menu based on current view
     let title, subtitle, menuItems;
@@ -924,6 +261,7 @@ const ContextMenu = React.memo(({ position, visible, selectedCompartment, select
         menuItems = selectedCompartment ? [
             { label: 'Compartment View', action: 'compartmentView', icon: '📦' },
             { label: 'Fit To Screen',    action: 'fitToScreen',     icon: '🔲' },
+            { label: 'Isolate',          action: 'isolate',         icon: '🔍' },
             { label: 'Hide',             action: 'hide',            icon: '👁️' },
         ] : [
             { label: 'Fit To Screen',    action: 'fitToScreen',     icon: '🔲' },
@@ -938,9 +276,7 @@ const ContextMenu = React.memo(({ position, visible, selectedCompartment, select
             { label: 'Asset View',    action: 'backToAsset',    icon: '🚢' },
             { label: 'Hullpart View', action: 'hullPartView',   icon: '🔧' },
             { label: 'Fit To Screen', action: 'fitToScreen',    icon: '🔲' },
-            hasAnomaly
-                ? { label: 'Edit Anomaly',   action: 'editAnomaly',   icon: '✏️' }
-                : { label: 'Anomaly',        action: 'createAnomaly', icon: '⚠️' },
+            { label: 'Isolate',       action: 'isolate',        icon: '🔍' },
             { label: 'Hide',          action: 'hide',           icon: '👁️' },
         ];
 
@@ -953,9 +289,7 @@ const ContextMenu = React.memo(({ position, visible, selectedCompartment, select
             { label: 'Asset View',       action: 'backToAsset',       icon: '🚢' },
             { label: 'Compartment View', action: 'backToCompartment', icon: '📦' },
             { label: 'Fit To Screen',    action: 'fitToScreen',       icon: '🔲' },
-            hasAnomaly
-                ? { label: 'Edit Anomaly', action: 'editAnomaly',   icon: '✏️' }
-                : { label: 'Anomaly',      action: 'createAnomaly', icon: '⚠️' },
+            { label: 'Isolate',          action: 'isolate',           icon: '🔍' },
             { label: 'Hide',             action: 'hide',              icon: '👁️' },
         ];
     }
@@ -1353,10 +687,14 @@ const HierarchicalSidebar = React.memo(({
                               color: 'inherit',
                               cursor: 'pointer',
                               width: 24,
-                              height: 22
+                              height: 22,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              padding: 0
                             }}
                           >
-                            {isVisible ? '👁' : '🚫'}
+                            {isVisible ? <EyeFill size={14} /> : <EyeSlashFill size={14} />}
                           </button>
                         </div>
 
@@ -1410,11 +748,15 @@ const HierarchicalSidebar = React.memo(({
                                       color: 'inherit',
                                       cursor: 'pointer',
                                       width: 24,
-                                      height: 22
+                                      height: 22,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      padding: 0
                                     }}
                                     title={hidden ? 'Show part' : 'Hide part'}
                                   >
-                                    {hidden ? '🚫' : '👁'}
+                                    {hidden ? <EyeSlashFill size={14} /> : <EyeFill size={14} />}
                                   </button>
                                 </div>
                               )
@@ -1433,4 +775,4 @@ const HierarchicalSidebar = React.memo(({
     </div>
   )
 })
-export { AnomalyListDialog, AnomalyDialog, ContextMenu, HierarchicalSidebar };
+export { ContextMenu, HierarchicalSidebar };

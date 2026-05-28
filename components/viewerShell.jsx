@@ -4,7 +4,7 @@ export const HEADER_HEIGHT = 54
 export const SIDEBAR_WIDTH = 360
 export const RIGHT_RAIL_WIDTH = 220
 
-export function AppHeader() {
+export function AppHeader({ breadcrumbs }) {
   return (
     <div
       style={{
@@ -22,10 +22,8 @@ export function AppHeader() {
         gap: 12
       }}
     >
-      <img src="/images/logo.svg" alt="ABS" style={{ height: 26, width: 'auto' }} />
-      <div style={{ color: 'rgba(255,255,255,0.92)', fontWeight: 800, fontSize: 14 }}>
-        Full Asset
-      </div>
+      <img src="/asset/images/logo.svg" alt="ABS" style={{ height: 26, width: 'auto' }} />
+      {breadcrumbs}
     </div>
   )
 }
