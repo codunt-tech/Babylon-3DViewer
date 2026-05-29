@@ -1,141 +1,457 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { Engine, Scene, ArcRotateCamera, HemisphericLight, Vector3, StandardMaterial, Color3, Color4, DirectionalLight, SceneLoader } from '@babylonjs/core';
+import {
+    Engine, Scene, ArcRotateCamera, HemisphericLight, Vector3,
+    StandardMaterial, Color3, Color4, DirectionalLight, SceneLoader,
+    Animation, CubicEase, EasingFunction,
+} from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
 import '@babylonjs/core/Cameras/Inputs/arcRotateCameraPointersInput';
 import '@babylonjs/core/Cameras/Inputs/arcRotateCameraKeyboardMoveInput';
 import '@babylonjs/core/Cameras/Inputs/arcRotateCameraMouseWheelInput';
 import { TestFPSOStruc } from '../src/shipData';
 import { ContextMenu, HierarchicalSidebar } from './babylonViewerUi';
-import { AppHeader, LoadingPill } from './viewerShell';
+import { AppHeader, LoadingPill, ComponentTypesRail } from './viewerShell';
+
+// ─── Data helpers ─────────────────────────────────────────────────────────────
 
 const getCompartmentNamesFromShipData = () => {
     const names = new Set();
-    ['plates', 'brackets', 'stiffeners', 'shells'].forEach((componentType) => {
-        if (TestFPSOStruc[componentType]) {
-            TestFPSOStruc[componentType].forEach((item) => names.add(item.compartmentName));
-        }
+    ['plates', 'brackets', 'stiffeners', 'shells'].forEach((t) => {
+        (TestFPSOStruc[t] || []).forEach((item) => names.add(item.compartmentName));
     });
     return Array.from(names);
 };
 
 const organizeByCompartments = () => {
     const compartments = {};
-    ['plates', 'brackets', 'stiffeners', 'shells'].forEach(componentType => {
-        if (TestFPSOStruc[componentType]) {
-            TestFPSOStruc[componentType].forEach(item => {
-                const compartmentName = item.compartmentName;
-                if (!compartments[compartmentName]) {
-                    compartments[compartmentName] = {
-                        compartmentName: compartmentName,
-                        uid: item.uid,
-                        components: {}
-                    };
-                }
-                compartments[compartmentName].components[componentType] = {
-                    name: compartmentName + '_' + componentType.toUpperCase(),
-                    path: item.link,
-                    type: componentType,
-                    uid: item.uid
-                };
-            });
-        }
+    ['plates', 'brackets', 'stiffeners', 'shells'].forEach((componentType) => {
+        (TestFPSOStruc[componentType] || []).forEach((item) => {
+            const { compartmentName, uid, link } = item;
+            if (!compartments[compartmentName]) {
+                compartments[compartmentName] = { compartmentName, uid, components: {} };
+            }
+            compartments[compartmentName].components[componentType] = {
+                name: `${compartmentName}_${componentType.toUpperCase()}`,
+                path: link,
+                type: componentType,
+                uid,
+            };
+        });
     });
     return compartments;
 };
 
 const initialOrganizedCompartments = organizeByCompartments();
 
+const INTERIOR_TYPES = new Set(['plates', 'brackets', 'stiffeners']);
+const SHELL_TYPES    = new Set(['shells', 'shell']);
+
+const COMPONENT_COLORS = {
+    brackets:   new Color3(0.76, 0.71, 0.26),
+    stiffeners: new Color3(0.73, 0.73, 0.73),
+    plates:     new Color3(0.286, 0.239, 0.459),
+    shells:     new Color3(0.29, 0.565, 0.886),
+    shell:      new Color3(0.29, 0.565, 0.886),
+};
+const DECK_COLOR    = new Color3(0.561, 0.737, 0.561);
+const DEFAULT_COLOR = new Color3(0.6, 0.6, 0.6);
+
+// ─── GLB loader ───────────────────────────────────────────────────────────────
+
+const loadGLBFile = async (scene, filePath, compartmentName, componentName, componentType) => {
+    try {
+        const result = await SceneLoader.ImportMeshAsync('', '', filePath, scene, null, '.glb');
+        const geometryMeshes = result.meshes.filter((m) => m.getTotalVertices() > 0);
+
+        geometryMeshes.forEach((mesh) => {
+            mesh.metadata = { ...mesh.metadata, compartmentName, componentType, componentName };
+
+            const isShellType = SHELL_TYPES.has(componentType);
+            const targetColor = isShellType
+                ? (mesh.name.toLowerCase().includes('deck') ? DECK_COLOR : COMPONENT_COLORS.shells)
+                : (COMPONENT_COLORS[componentType] ?? DEFAULT_COLOR);
+
+            const matName = `mat_${componentType}_${compartmentName}`;
+            let mat = scene.getMaterialByName(matName);
+            if (!mat) {
+                mat = new StandardMaterial(matName, scene);
+                mat.diffuseColor     = targetColor;
+                mat.specularColor    = new Color3(0, 0, 0);
+                mat.specularPower    = 0;
+                mat.backFaceCulling  = false;
+                mat.alpha            = 1.0;
+                mat.transparencyMode = 0;
+                if (componentType === 'plates') mat.zOffset = 1;
+            }
+            mesh.material = mat;
+
+            if (isShellType) {
+                mesh.enableEdgesRendering(0.9, true);
+                mesh.edgesWidth = 2.0;
+                mesh.edgesColor = new Color4(1, 1, 1, 0.85);
+            }
+
+            mesh.freezeWorldMatrix();
+            // FIX: Start pickable; applyMeshStates will set false when hidden
+            mesh.isPickable = true;
+        });
+
+        return { meshes: geometryMeshes, success: geometryMeshes.length > 0, compartmentName, componentName, componentType };
+    } catch (error) {
+        console.error(`Error loading GLB: ${filePath}`, error);
+        return { meshes: [], success: false };
+    }
+};
+
+// ─── Emissive constants ───────────────────────────────────────────────────────
+
+const EMISSIVE_NONE     = new Color3(0, 0, 0);
+const EMISSIVE_PART     = new Color3(0, 0.55, 0.1);
+const EMISSIVE_COMP     = new Color3(0, 0.2, 0);
+const EMISSIVE_MILD     = new Color3(0, 0.08, 0);
+const EMISSIVE_SELECTED = new Color3(0.05, 0.28, 0.08);
+
+function getOrCreateSelectionMaterial(mesh, scene) {
+    const selMatName = `${mesh.material.name}_SEL`;
+    let selMat = scene.getMaterialByName(selMatName);
+    if (!selMat) selMat = mesh.material.clone(selMatName);
+    selMat.emissiveColor = EMISSIVE_PART;
+    return selMat;
+}
+
+// ─── applyMeshStates ──────────────────────────────────────────────────────────
+// FIX: also sets mesh.isPickable = visible so hidden meshes are never raycasted
+
+function applyMeshStates({
+    loadedCompartments, compartmentVisibility, componentTypeVisibility,
+    viewMode, selectedCompartment, selectedPart, selectedComponentType,
+    hiddenParts, scene,
+}) {
+    Object.values(loadedCompartments).forEach((compartment) => {
+        Object.values(compartment.loadedComponents).forEach((component) => {
+            (component.meshes || []).forEach((mesh) => {
+                if (!mesh || mesh.isDisposed() || !mesh.material) return;
+
+                const isShellType  = SHELL_TYPES.has(component.type);
+                const isInterior   = INTERIOR_TYPES.has(component.type);
+                const partId       = `${compartment.compartmentName}-${mesh.name}`;
+
+                // ── Visibility ────────────────────────────────────────────────
+                let visible =
+                    compartmentVisibility[compartment.compartmentName] !== false &&
+                    componentTypeVisibility[component.type] !== false;
+
+                if (viewMode === 'asset' && isInterior) visible = false;
+
+                if (viewMode === 'compartment' || viewMode === 'hullPart') {
+                    visible = visible && compartment.compartmentName === selectedCompartment;
+                }
+                if (viewMode === 'hullPart' && selectedComponentType) {
+                    visible = visible && component.type === selectedComponentType;
+                }
+                if (viewMode === 'compartment' && hiddenParts.has(partId)) visible = false;
+
+                mesh.isVisible  = visible;
+                // FIX: disable picking on hidden meshes so they don't intercept raycasts
+                mesh.isPickable = visible;
+
+                if (!visible) {
+                    const baseMat = scene?.getMaterialByName(`mat_${component.type}_${compartment.compartmentName}`);
+                    if (baseMat && mesh.material !== baseMat) mesh.material = baseMat;
+                    return;
+                }
+
+                // ── Emissive / highlight ──────────────────────────────────────
+                const isPartSelected      = selectedPart === partId && viewMode === 'compartment';
+                const isAssetSelected     = selectedCompartment === compartment.compartmentName && viewMode === 'asset';
+                const isInOpenCompartment = viewMode === 'compartment' && compartment.compartmentName === selectedCompartment;
+
+                const baseMat = scene?.getMaterialByName(`mat_${component.type}_${compartment.compartmentName}`);
+
+                if (isPartSelected) {
+                    if (scene) mesh.material = getOrCreateSelectionMaterial(baseMat || mesh.material, scene);
+                    mesh.enableEdgesRendering(0.9, true);
+                    mesh.edgesWidth = 6.0;
+                    mesh.edgesColor = new Color4(0.2, 1.0, 0.4, 1.0);
+                } else {
+                    if (baseMat && mesh.material !== baseMat) mesh.material = baseMat;
+
+                    if (isAssetSelected) {
+                        mesh.material.emissiveColor = EMISSIVE_SELECTED;
+                        if (isShellType) {
+                            mesh.enableEdgesRendering(0.9, true);
+                            mesh.edgesWidth = 4.0;
+                            mesh.edgesColor = new Color4(0.3, 1.0, 0.5, 1.0);
+                        }
+                    } else if (isInOpenCompartment) {
+                        mesh.material.emissiveColor = EMISSIVE_MILD;
+                        if (!isShellType && mesh._edgesRenderer) mesh.disableEdgesRendering();
+                    } else {
+                        mesh.material.emissiveColor = EMISSIVE_NONE;
+                        if (!isShellType && mesh._edgesRenderer) mesh.disableEdgesRendering();
+                        if (isShellType && mesh._edgesRenderer) {
+                            mesh.edgesWidth = 2.0;
+                            mesh.edgesColor = new Color4(1, 1, 1, 0.85);
+                        }
+                    }
+                }
+            });
+        });
+    });
+}
+
+// ─── Camera animation ─────────────────────────────────────────────────────────
+
+function animateCameraTo(camera, scene, targetCenter, targetRadius, durationFrames = 30) {
+    if (!camera || !scene) return;
+    const clampedRadius = Math.max(
+        camera.lowerRadiusLimit || 1,
+        Math.min(camera.upperRadiusLimit || 3000, targetRadius)
+    );
+    const ease = new CubicEase();
+    ease.setEasingMode(EasingFunction.EASINGMODE_EASEINOUT);
+    Animation.CreateAndStartAnimation('camTargetX', camera, 'target.x', 60, durationFrames, camera.target.x, targetCenter.x, Animation.ANIMATIONLOOPMODE_CONSTANT, ease);
+    Animation.CreateAndStartAnimation('camTargetY', camera, 'target.y', 60, durationFrames, camera.target.y, targetCenter.y, Animation.ANIMATIONLOOPMODE_CONSTANT, ease);
+    Animation.CreateAndStartAnimation('camTargetZ', camera, 'target.z', 60, durationFrames, camera.target.z, targetCenter.z, Animation.ANIMATIONLOOPMODE_CONSTANT, ease);
+    Animation.CreateAndStartAnimation('camRadius',  camera, 'radius',   60, durationFrames, camera.radius,   clampedRadius,  Animation.ANIMATIONLOOPMODE_CONSTANT, ease);
+}
+
+function animateCameraAngle(camera, scene, targetAlpha, targetBeta, durationFrames = 40) {
+    if (!camera || !scene) return;
+    const ease = new CubicEase();
+    ease.setEasingMode(EasingFunction.EASINGMODE_EASEINOUT);
+    Animation.CreateAndStartAnimation('camAlpha', camera, 'alpha', 60, durationFrames, camera.alpha, targetAlpha, Animation.ANIMATIONLOOPMODE_CONSTANT, ease);
+    Animation.CreateAndStartAnimation('camBeta',  camera, 'beta',  60, durationFrames, camera.beta,  targetBeta,  Animation.ANIMATIONLOOPMODE_CONSTANT, ease);
+}
+
+const centerModel = (scene, meshes, camera, animate = false) => {
+    const valid = meshes.filter((m) => m && !m.isDisposed() && m.getTotalVertices() > 0);
+    if (!valid.length) return;
+    valid.forEach((m) => m.refreshBoundingInfo());
+
+    let min = new Vector3(Infinity, Infinity, Infinity);
+    let max = new Vector3(-Infinity, -Infinity, -Infinity);
+    valid.forEach((mesh) => {
+        const bi = mesh.getBoundingInfo();
+        if (!bi) return;
+        min = Vector3.Minimize(min, bi.boundingBox.minimumWorld);
+        max = Vector3.Maximize(max, bi.boundingBox.maximumWorld);
+    });
+
+    const center  = Vector3.Center(min, max);
+    const size    = max.subtract(min);
+    const maxDim  = Math.max(size.x, size.y, size.z);
+    const fov     = camera.fov || Math.PI / 4;
+    const fitDist = ((maxDim / 2) / Math.tan(fov / 2)) * 1.8;
+
+    camera.lowerRadiusLimit = fitDist * 0.05;
+    camera.upperRadiusLimit = fitDist * 12;
+
+    if (animate) {
+        animateCameraTo(camera, scene, center, fitDist);
+    } else {
+        camera.target = center;
+        camera.radius = fitDist;
+        camera.alpha  = -Math.PI / 4;
+        camera.beta   = Math.PI / 3;
+    }
+};
+
+// ─── Axis Controls UI ─────────────────────────────────────────────────────────
+// Floating panel: snap camera to X / Y / Z axis views + step-rotate buttons
+
+const AXIS_VIEWS = [
+    { label: '+Y',  title: 'Top',    alpha: -Math.PI / 2, beta: 0.01 },
+    { label: '−Y',  title: 'Bottom', alpha: -Math.PI / 2, beta: Math.PI - 0.01 },
+    { label: '+Z',  title: 'Front',  alpha: -Math.PI / 2, beta: Math.PI / 2 },
+    { label: '−Z',  title: 'Back',   alpha:  Math.PI / 2, beta: Math.PI / 2 },
+    { label: '+X',  title: 'Right',  alpha:  0,           beta: Math.PI / 2 },
+    { label: '−X',  title: 'Left',   alpha:  Math.PI,     beta: Math.PI / 2 },
+    { label: '⟳',   title: 'Iso',    alpha: -Math.PI / 4, beta: Math.PI / 3 },
+];
+
+const STEP = Math.PI / 12; // 15°
+
+const AxisControls = ({ sceneRef }) => {
+    const snapTo = (alpha, beta) => {
+        const cam = sceneRef.current?.activeCamera;
+        if (cam) animateCameraAngle(cam, sceneRef.current, alpha, beta);
+    };
+    const rotateAlpha = (dir) => {
+        const cam = sceneRef.current?.activeCamera;
+        if (cam) animateCameraAngle(cam, sceneRef.current, cam.alpha + dir * STEP, cam.beta);
+    };
+    const rotateBeta = (dir) => {
+        const cam = sceneRef.current?.activeCamera;
+        if (!cam) return;
+        const next = Math.max(0.05, Math.min(Math.PI * 0.49, cam.beta + dir * STEP));
+        animateCameraAngle(cam, sceneRef.current, cam.alpha, next);
+    };
+
+    const panel = {
+        position: 'fixed',
+        bottom: 24,
+        right: 24,
+        zIndex: 2000,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        userSelect: 'none',
+    };
+    const group = {
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'rgba(18,28,40,0.88)',
+        border: '1px solid rgba(255,255,255,0.10)',
+        borderRadius: 10,
+        overflow: 'hidden',
+        backdropFilter: 'blur(8px)',
+    };
+    const rowStyle = { display: 'flex' };
+    const btnBase = {
+        width: 46,
+        height: 34,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: '0.02em',
+        cursor: 'pointer',
+        color: 'rgba(200,220,255,0.85)',
+        background: 'transparent',
+        border: 'none',
+        borderRight: '1px solid rgba(255,255,255,0.06)',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        transition: 'background 0.12s, color 0.12s',
+        fontFamily: 'system-ui, sans-serif',
+    };
+
+    const Btn = ({ onClick, title, children, style = {} }) => {
+        const [hov, setHov] = useState(false);
+        return (
+            <button
+                onClick={onClick}
+                title={title}
+                style={{
+                    ...btnBase,
+                    ...style,
+                    background: hov ? 'rgba(77,162,255,0.18)' : 'transparent',
+                    color: hov ? '#7dd4fc' : 'rgba(200,220,255,0.85)',
+                }}
+                onMouseEnter={() => setHov(true)}
+                onMouseLeave={() => setHov(false)}
+            >
+                {children}
+            </button>
+        );
+    };
+
+    // Label strip
+    const label = {
+        padding: '4px 0 2px',
+        textAlign: 'center',
+        fontSize: 9,
+        fontWeight: 600,
+        letterSpacing: '0.08em',
+        textTransform: 'uppercase',
+        color: 'rgba(150,180,220,0.5)',
+        fontFamily: 'system-ui, sans-serif',
+    };
+
+    return (
+        <div style={panel}>
+            {/* Axis snap views */}
+            <div style={group}>
+                <div style={label}>Axis Views</div>
+                <div style={rowStyle}>
+                    <Btn onClick={() => snapTo(AXIS_VIEWS[0].alpha, AXIS_VIEWS[0].beta)} title="Top (+Y)">Top</Btn>
+                    <Btn onClick={() => snapTo(AXIS_VIEWS[1].alpha, AXIS_VIEWS[1].beta)} title="Bottom (−Y)">Bot</Btn>
+                    <Btn onClick={() => snapTo(AXIS_VIEWS[6].alpha, AXIS_VIEWS[6].beta)} title="Isometric" style={{ borderRight: 'none' }}>Iso</Btn>
+                </div>
+                <div style={rowStyle}>
+                    <Btn onClick={() => snapTo(AXIS_VIEWS[2].alpha, AXIS_VIEWS[2].beta)} title="Front (+Z)">Frt</Btn>
+                    <Btn onClick={() => snapTo(AXIS_VIEWS[3].alpha, AXIS_VIEWS[3].beta)} title="Back (−Z)">Bck</Btn>
+                    <Btn onClick={() => snapTo(AXIS_VIEWS[4].alpha, AXIS_VIEWS[4].beta)} title="Right (+X)" style={{ borderRight: 'none' }}>Rgt</Btn>
+                </div>
+                <div style={rowStyle}>
+                    <Btn onClick={() => snapTo(AXIS_VIEWS[5].alpha, AXIS_VIEWS[5].beta)} title="Left (−X)" style={{ borderBottom: 'none' }}>Lft</Btn>
+                </div>
+            </div>
+
+            {/* Step-rotate controls */}
+            <div style={group}>
+                <div style={label}>Rotate</div>
+                {/* Orbit left/right = alpha */}
+                <div style={rowStyle}>
+                    <Btn onClick={() => rotateAlpha(-1)} title="Rotate left (−X orbit)" style={{ width: 69, borderBottom: 'none' }}>
+                        ← X
+                    </Btn>
+                    <Btn onClick={() => rotateAlpha(+1)} title="Rotate right (+X orbit)" style={{ width: 69, borderRight: 'none', borderBottom: 'none' }}>
+                        X →
+                    </Btn>
+                </div>
+                {/* Elevation up/down = beta */}
+                <div style={{ ...rowStyle, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                    <Btn onClick={() => rotateBeta(-1)} title="Tilt up (−Y)" style={{ width: 69 }}>
+                        ↑ Y
+                    </Btn>
+                    <Btn onClick={() => rotateBeta(+1)} title="Tilt down (+Y)" style={{ width: 69, borderRight: 'none' }}>
+                        Y ↓
+                    </Btn>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 const BabylonScene = () => {
     const HEADER_HEIGHT = 54;
-    const RIGHT_RAIL_WIDTH = 220;
     const SIDEBAR_WIDTH = 300;
 
-    const canvasRef = useRef(null);
-    const sceneRef = useRef(null);
-    const engineRef = useRef(null);
+    const canvasRef  = useRef(null);
+    const sceneRef   = useRef(null);
+    const engineRef  = useRef(null);
+
+    const handleCompartmentSelectRef = useRef(null);
+    const loadedCompartmentsRef      = useRef({});
+
     const compartmentNames = useMemo(() => getCompartmentNamesFromShipData(), []);
-    const [loadedCompartments, setLoadedCompartments] = useState({});
-    const [loadingProgress, setLoadingProgress] = useState({ loaded: 0, total: 0 });
-    const [organizedCompartments, setOrganizedCompartments] = useState(initialOrganizedCompartments);
-    const [compartmentVisibility, setCompartmentVisibility] = useState({});
+
+    // ── State ────────────────────────────────────────────────────────────────
+    const [loadedCompartments,      setLoadedCompartments]      = useState({});
+    const [loadingProgress,         setLoadingProgress]         = useState({ loaded: 0, total: 0 });
+    const [organizedCompartments]                               = useState(initialOrganizedCompartments);
+    const [compartmentVisibility,   setCompartmentVisibility]   = useState({});
     const [componentTypeVisibility, setComponentTypeVisibility] = useState({
-        plates: true,
-        brackets: true,
-        stiffeners: true,
-        compartment: true,
-        shell: true,
-        shells: true
+        plates: true, brackets: true, stiffeners: true,
+        compartment: true, shell: true, shells: true,
     });
 
-    // Selection and interaction states - 3-Level View Flow
-    const [viewMode, setViewMode] = useState('asset'); // 'asset' | 'compartment' | 'hullPart'
-    const [selectedCompartment, setSelectedCompartment] = useState(null);
-    const [selectedPart, setSelectedPart] = useState(null); // Hull part selection
-    const [contextMenu, setContextMenu] = useState({ visible: false, position: { x: 0, y: 0 } });
-    const [isolatedCompartments, setIsolatedCompartments] = useState(new Set());
-    const [isolatedParts, setIsolatedParts] = useState(new Set()); // Hull parts
-    const [hiddenParts, setHiddenParts] = useState(new Set()); // Individual part hiding
-    const [selectedComponentType, setSelectedComponentType] = useState(null);
-    const [gaugingPointsEnabled, setGaugingPointsEnabled] = useState(false);
+    const [viewMode,              setViewMode]             = useState('asset');
+    const [selectedCompartment,   setSelectedCompartment]  = useState(null);
+    const [selectedPart,          setSelectedPart]         = useState(null);
+    const [contextMenu,           setContextMenu]          = useState({ visible: false, position: { x: 0, y: 0 } });
+    const [isolatedCompartments,  setIsolatedCompartments] = useState(new Set());
+    const [isolatedParts,         setIsolatedParts]        = useState(new Set());
+    const [hiddenParts,           setHiddenParts]          = useState(new Set());
+    const [selectedComponentType, setSelectedComponentType]= useState(null);
+    const [gaugingPointsEnabled,  setGaugingPointsEnabled] = useState(false);
 
-    // Keep the latest selection handler without forcing Babylon to re-initialize.
-    const handleCompartmentSelectRef = useRef(null);
+    useEffect(() => { loadedCompartmentsRef.current = loadedCompartments; }, [loadedCompartments]);
 
     useEffect(() => {
-        const initialVisibility = {};
-        compartmentNames.forEach((name) => {
-            initialVisibility[name] = true;
-        });
-        setCompartmentVisibility(initialVisibility);
+        const init = {};
+        compartmentNames.forEach((n) => { init[n] = true; });
+        setCompartmentVisibility(init);
     }, [compartmentNames]);
 
-    const centerModel = (scene, meshes, camera) => {
-        const valid = meshes.filter(m =>
-            m && !m.isDisposed() && m.getTotalVertices() > 0
-        );
-        if (valid.length === 0) return;
-
-        // Force update all bounding boxes
-        valid.forEach(m => m.refreshBoundingInfo());
-
-        let min = new Vector3(Infinity, Infinity, Infinity);
-        let max = new Vector3(-Infinity, -Infinity, -Infinity);
-
-        valid.forEach(mesh => {
-            const bi = mesh.getBoundingInfo();
-            if (!bi) return;
-            min = Vector3.Minimize(min, bi.boundingBox.minimumWorld);
-            max = Vector3.Maximize(max, bi.boundingBox.maximumWorld);
-        });
-
-        const center = Vector3.Center(min, max);
-        const size = max.subtract(min);
-        const maxDim = Math.max(size.x, size.y, size.z);
-
-        // ✅ Use canvas aspect ratio for proper fit
-        const canvas = scene.getEngine().getRenderingCanvas();
-        const aspect = canvas ? canvas.width / canvas.height : 1.6;
-        const fov = camera.fov || (Math.PI / 4);
-
-        // Fit longest dimension into view with padding
-        const fitDist = (maxDim / 2) / Math.tan(fov / 2) * 1.8;
-
-        camera.target = center;
-        camera.radius = fitDist;
-        camera.alpha = -Math.PI / 4;   // ✅ 45° angle — shows ship from front-side
-        camera.beta = Math.PI / 3;     // ✅ ~60° — good top-down angle
-        camera.lowerRadiusLimit = fitDist * 0.1;
-        camera.upperRadiusLimit = fitDist * 10;
-    };
-
-    // Camera centering functionality for 3-Level View System
+    // ── Camera centering ─────────────────────────────────────────────────────
     const centerOnSelection = useCallback((targetType, targetName) => {
-        if (!sceneRef.current) return;
-
-        console.log(`🎯 Centering camera on ${targetType}: ${targetName}`);
-
         const scene = sceneRef.current;
+        if (!scene) return;
         const camera = scene.activeCamera;
         if (!camera) return;
 
@@ -144,985 +460,602 @@ const BabylonScene = () => {
         let hasBounds = false;
 
         scene.meshes.forEach((mesh) => {
-            if (!mesh.metadata) return;
-
-            if (targetType === 'compartment' && mesh.metadata.compartmentName === targetName) {
-                mesh.computeWorldMatrix(true);
-                mesh.refreshBoundingInfo();
-                const bi = mesh.getBoundingInfo();
-                if (!bi) return;
-                min = Vector3.Minimize(min, bi.boundingBox.minimumWorld);
-                max = Vector3.Maximize(max, bi.boundingBox.maximumWorld);
-                hasBounds = true;
-            } else if (targetType === 'part' && mesh.metadata.compartmentName) {
-                const partName = mesh.name || `unnamed_${mesh.id}`;
-                const partId = `${mesh.metadata.compartmentName}-${partName}`;
-                if (partId === targetName) {
-                    mesh.computeWorldMatrix(true);
-                    mesh.refreshBoundingInfo();
-                    const bi = mesh.getBoundingInfo();
-                    if (!bi) return;
-                    min = Vector3.Minimize(min, bi.boundingBox.minimumWorld);
-                    max = Vector3.Maximize(max, bi.boundingBox.maximumWorld);
-                    hasBounds = true;
-                }
-            }
+            if (!mesh.metadata || !mesh.isVisible) return;
+            const match =
+                targetType === 'compartment'
+                    ? mesh.metadata.compartmentName === targetName
+                    : `${mesh.metadata.compartmentName}-${mesh.name}` === targetName;
+            if (!match) return;
+            mesh.computeWorldMatrix(true);
+            mesh.refreshBoundingInfo();
+            const bi = mesh.getBoundingInfo();
+            if (!bi) return;
+            min = Vector3.Minimize(min, bi.boundingBox.minimumWorld);
+            max = Vector3.Maximize(max, bi.boundingBox.maximumWorld);
+            hasBounds = true;
         });
 
         if (hasBounds) {
-            const center = Vector3.Center(min, max);
-            const size = max.subtract(min);
-            
-            const maxDim = Math.max(size.x, size.y, size.z);
-            const distance = maxDim * 2.5;
-            
-            camera.setPosition(center.add(new Vector3(distance, distance * 0.5, distance)));
-            camera.setTarget(center);
+            const center  = Vector3.Center(min, max);
+            const size    = max.subtract(min);
+            const maxDim  = Math.max(size.x, size.y, size.z);
+            const fov     = camera.fov || Math.PI / 4;
+            const fitDist = ((maxDim / 2) / Math.tan(fov / 2)) * 1.8;
+            animateCameraTo(camera, scene, center, fitDist);
         }
     }, []);
 
-
-
-    const loadGLBFile = async (scene, filePath, compartmentName, componentName, componentType) => {
-        try {
-            // ✅ Skip unused data during import
-            const result = await SceneLoader.ImportMeshAsync(
-                "",
-                "",
-                filePath,
-                scene,
-                null,           // onProgress
-                ".glb"          // ✅ explicitly tell Babylon the format
-            );
-
-            // ✅ Only process actual geometry meshes, skip cameras/lights/roots
-            const geometryMeshes = result.meshes.filter(
-                m => m.getTotalVertices() > 0
-            );
-
-            geometryMeshes.forEach(mesh => {
-                mesh.metadata = {
-                    ...mesh.metadata,
-                    compartmentName,
-                    componentType,
-                    componentName
-                };
-
-                if (!mesh.material) return;
-
-                let targetColor = null;
-                switch (componentType) {
-                    case 'brackets':
-                        targetColor = new Color3(0.76, 0.71, 0.26);
-                        break;
-                    case 'stiffeners':
-                        targetColor = new Color3(0.73, 0.73, 0.73);
-                        break;
-                    case 'plates':
-                        targetColor = new Color3(0.286, 0.239, 0.459);
-                        break;
-                    case 'shells':
-                    case 'shell': {
-                        const pos = mesh.metadata?.POSITION;
-                        const isDeck = pos === 'Deck' || mesh.name.toLowerCase().includes('deck');
-                        targetColor = isDeck
-                            ? new Color3(0.561, 0.737, 0.561)
-                            : new Color3(0.29, 0.565, 0.886);
-                        break;
-                    }
-                    default:
-                        targetColor = new Color3(0.6, 0.6, 0.6);
-                }
-
-                const mat = new StandardMaterial(
-                    `mat_${componentType}_${compartmentName}`,  // ✅ shared name = reused material
-                    scene
-                );
-                mat.diffuseColor = targetColor;
-                mat.specularColor = new Color3(0, 0, 0);
-                mat.specularPower = 0;
-                mat.backFaceCulling = false;
-                mat.alpha = 1.0;
-                mat.transparencyMode = 0;
-
-                if (componentType === 'plates') mat.zOffset = 1;
-
-                mesh.material = mat;
-
-                // ✅ Edge rendering only for shells (most expensive — skip for others)
-                if (componentType === 'shells' || componentType === 'shell') {
-                    mesh.enableEdgesRendering(0.9, true);
-                    mesh.edgesWidth = 2.0;
-                    mesh.edgesColor = new Color4(1, 1, 1, 0.85);
-                }
-
-                // ✅ Freeze mesh transforms (saves CPU each frame since ship is static)
-                mesh.freezeWorldMatrix();
-            });
-
-            return {
-                meshes: geometryMeshes,
-                success: geometryMeshes.length > 0,
-                compartmentName,
-                componentName,
-                componentType
-            };
-        } catch (error) {
-            console.error(`Error loading GLB: ${filePath}`, error);
-            return { meshes: [], success: false };
-        }
-    };   // ← correct closing for the loadGLBFile arrow function
-
-    const loadedCompartmentsRef = useRef({});
-
-    useEffect(() => {
-        loadedCompartmentsRef.current = loadedCompartments;
-    }, [loadedCompartments]);
-
-    const loadCompartment = useCallback(async (compartmentName) => {
+    // ── Lazy interior loader ──────────────────────────────────────────────────
+    const loadCompartmentInterior = useCallback(async (compartmentName) => {
         const scene = sceneRef.current;
         if (!scene) return;
 
         const compartmentData = organizedCompartments[compartmentName];
         if (!compartmentData) return;
 
-        // Dispose using ref (not stale closure)
-        Object.values(loadedCompartmentsRef.current).forEach(compartment => {
-            Object.values(compartment.loadedComponents || {}).forEach(comp => {
-                (comp.meshes || []).forEach(mesh => {
+        const interiorFiles = Object.values(compartmentData.components)
+            .filter((comp) => INTERIOR_TYPES.has(comp.type))
+            .map((comp) => ({ type: comp.type, data: comp, compartmentName }));
+
+        if (interiorFiles.length === 0) return;
+
+        setLoadingProgress({ loaded: 0, total: interiorFiles.length });
+
+        const current = loadedCompartmentsRef.current;
+        Object.entries(current).forEach(([cName, compartment]) => {
+            if (cName === compartmentName) return;
+            Object.values(compartment.loadedComponents || {}).forEach((comp) => {
+                if (!INTERIOR_TYPES.has(comp.type)) return;
+                (comp.meshes || []).forEach((mesh) => {
                     if (mesh && !mesh.isDisposed()) mesh.dispose(false, true);
                 });
             });
         });
-        setLoadedCompartments({});
-        loadedCompartmentsRef.current = {};
 
-        let allFiles = [];
-        Object.values(compartmentData.components).forEach(comp => {
-            allFiles.push({
-                type: comp.type,
-                data: comp,
-                compartmentName: compartmentName
+        const newLoaded = {};
+        Object.entries(current).forEach(([cName, compartment]) => {
+            const filteredComponents = {};
+            Object.entries(compartment.loadedComponents || {}).forEach(([type, comp]) => {
+                if (SHELL_TYPES.has(comp.type)) filteredComponents[type] = comp;
             });
+            newLoaded[cName] = { ...compartment, loadedComponents: filteredComponents };
         });
 
-        setLoadingProgress({ loaded: 0, total: allFiles.length });
-        let allMeshes = [];
-        
-        const newLoadedCompartments = {
-            [compartmentName]: { ...compartmentData, loadedComponents: {} }
-        };
-
-        const results = await Promise.all(
-            allFiles.map(async ({ type, data, compartmentName }) => {
-                const result = await loadGLBFile(scene, data.path, compartmentName, data.name, type);
-                setLoadingProgress(prev => ({ ...prev, loaded: prev.loaded + 1 }));
-                return { type, data, result, compartmentName };
-            })
-        );
-
-        results.forEach(({ type, data, result, compartmentName }) => {
-            if (result.success) {
-                newLoadedCompartments[compartmentName].loadedComponents[type] = {
-                    ...data,
-                    meshes: result.meshes
-                };
-                allMeshes.push(...result.meshes);
-            }
-        });
-
-        setLoadedCompartments(newLoadedCompartments);
-        
-        const initialVisibility = { [compartmentName]: true };
-        setCompartmentVisibility(initialVisibility);
-
-        if (allMeshes.length > 0) {
-            setTimeout(() => {
-                const scene = sceneRef.current;
-                if (!scene) return;
-                centerModel(scene, allMeshes, scene.activeCamera);
-            }, 500);
+        if (!newLoaded[compartmentName]) {
+            newLoaded[compartmentName] = { ...compartmentData, loadedComponents: {} };
         }
-        
-        setTimeout(() => setLoadingProgress({ loaded: 0, total: 0 }), 500);
+
+        let allInteriorMeshes = [];
+        for (const { type, data } of interiorFiles) {
+            const result = await loadGLBFile(scene, data.path, compartmentName, data.name, type);
+            setLoadingProgress((prev) => ({ ...prev, loaded: prev.loaded + 1 }));
+            if (result.success) {
+                newLoaded[compartmentName].loadedComponents[type] = { ...data, meshes: result.meshes };
+                allInteriorMeshes.push(...result.meshes);
+            }
+        }
+
+        setLoadedCompartments({ ...newLoaded });
+        loadedCompartmentsRef.current = { ...newLoaded };
+        setTimeout(() => setLoadingProgress({ loaded: 0, total: 0 }), 400);
+        return allInteriorMeshes;
     }, [organizedCompartments]);
 
-    // Close context menu when clicking elsewhere
+    // ── applySceneState ───────────────────────────────────────────────────────
+    const applySceneState = useCallback((overrides = {}) => {
+        applyMeshStates({
+            loadedCompartments:      loadedCompartmentsRef.current,
+            compartmentVisibility,
+            componentTypeVisibility,
+            viewMode,
+            selectedCompartment,
+            selectedPart,
+            selectedComponentType,
+            hiddenParts,
+            scene: sceneRef.current,
+            ...overrides,
+        });
+    }, [compartmentVisibility, componentTypeVisibility, viewMode, selectedCompartment, selectedPart, selectedComponentType, hiddenParts]);
+
     useEffect(() => {
-        const handleClickOutside = () => {
-            setContextMenu(prev => ({ ...prev, visible: false }))
+        if (Object.keys(loadedCompartments).length === 0) return;
+        applySceneState();
+    }, [loadedCompartments, compartmentVisibility, componentTypeVisibility, viewMode, selectedCompartment, selectedPart, selectedComponentType, hiddenParts]);
+
+    useEffect(() => {
+        if (viewMode === 'compartment' && selectedCompartment) {
+            setTimeout(() => centerOnSelection('compartment', selectedCompartment), 80);
+        } else if (viewMode === 'hullPart' && selectedPart) {
+            setTimeout(() => centerOnSelection('part', selectedPart), 80);
         }
+    }, [viewMode, selectedCompartment, selectedPart, centerOnSelection]);
 
-        if (contextMenu.visible) {
-            document.addEventListener('click', handleClickOutside)
-            return () => document.removeEventListener('click', handleClickOutside)
+    useEffect(() => {
+        if (isolatedCompartments.size === 1) {
+            setTimeout(() => centerOnSelection('compartment', Array.from(isolatedCompartments)[0]), 80);
+        } else if (isolatedParts.size === 1) {
+            setTimeout(() => centerOnSelection('part', Array.from(isolatedParts)[0]), 80);
         }
-    }, [contextMenu.visible])
+    }, [isolatedCompartments, isolatedParts, centerOnSelection]);
 
-    // Action handlers
-    const handleIsolate = useCallback((compartmentName) => {
-        console.log(`🔍 Isolating ${compartmentName}`)
-        setIsolatedCompartments(new Set([compartmentName]))
-        
-        // Apply isolation visibility to meshes
-        Object.values(loadedCompartments).forEach(compartment => {
-            Object.values(compartment.loadedComponents).forEach(component => {
-                if (component.meshes) {
-                    const shouldBeVisible = compartment.compartmentName === compartmentName && 
-                                          componentTypeVisibility[component.type] &&
-                                          compartmentVisibility[compartment.compartmentName] !== false
-                    component.meshes.forEach(mesh => {
-                        mesh.isVisible = shouldBeVisible
-                    })
-                }
-            })
-        })
-    }, [loadedCompartments, componentTypeVisibility, compartmentVisibility])
+    useEffect(() => {
+        if (!contextMenu.visible) return;
+        const close = () => setContextMenu((p) => ({ ...p, visible: false }));
+        document.addEventListener('click', close);
+        return () => document.removeEventListener('click', close);
+    }, [contextMenu.visible]);
 
-    const handleHide = useCallback((compartmentName) => {
-        console.log(`👁️‍🗨️ Hiding ${compartmentName}`)
-        setCompartmentVisibility(prev => ({
-            ...prev,
-            [compartmentName]: false
-        }))
-    }, [])
-
-    const handleIsolateCompartment = useCallback((compartmentName) => {
-        if (isolatedCompartments.has(compartmentName)) {
-            setIsolatedCompartments(new Set());
-            const allVisible = {};
-            Object.keys(organizedCompartments).forEach(comp => {
-                allVisible[comp] = true;
-            });
-            setCompartmentVisibility(allVisible);
-        } else {
-            setIsolatedCompartments(new Set([compartmentName]));
-        }
-    }, [isolatedCompartments, organizedCompartments]);
+    // ── Action handlers ───────────────────────────────────────────────────────
 
     const handleShowAll = useCallback(() => {
-        console.log(`👁️ Show All Triggered`)
-        setIsolatedCompartments(new Set())
-        
-        // Show all compartments
-        const allVisible = {}
-        Object.keys(loadedCompartments).forEach(compartmentName => {
-            allVisible[compartmentName] = true
-        })
-        setCompartmentVisibility(allVisible)
-        
-        // Apply visibility to all meshes
-        Object.values(loadedCompartments).forEach(compartment => {
-            Object.values(compartment.loadedComponents).forEach(component => {
-                if (component.meshes) {
-                    component.meshes.forEach(mesh => {
-                        mesh.isVisible = componentTypeVisibility[component.type]
-                    })
-                }
-            })
-        })
-    }, [loadedCompartments, componentTypeVisibility])
+        setIsolatedCompartments(new Set());
+        const allVisible = {};
+        Object.keys(loadedCompartmentsRef.current).forEach((n) => { allVisible[n] = true; });
+        setCompartmentVisibility(allVisible);
+    }, []);
 
     const handleReset = useCallback(() => {
-        console.log(`🔄 Reset View Triggered`)
-        setViewMode('asset')
-        setSelectedCompartment(null)
-        setSelectedPart(null)
-        setSelectedComponentType(null)
-        setIsolatedCompartments(new Set())
-        setIsolatedParts(new Set())
-        setHiddenParts(new Set())
-        setAnomalies(new Map())
-        setAnomalyDialog({ visible: false, partName: null, existingAnomaly: null })
-        setAnomalyListDialog({ visible: false })
-        handleShowAll()
-    }, [handleShowAll])
+        setViewMode('asset');
+        setSelectedCompartment(null);
+        setSelectedPart(null);
+        setSelectedComponentType(null);
+        setIsolatedCompartments(new Set());
+        setIsolatedParts(new Set());
+        setHiddenParts(new Set());
+        handleShowAll();
+    }, [handleShowAll]);
 
-    const handleSelectComponentType = useCallback((componentType) => {
-        if (viewMode === 'compartment' && selectedCompartment) {
-            setSelectedComponentType(componentType);
-        }
-    }, [viewMode, selectedCompartment]);
+    const handleHide = useCallback((compartmentName) => {
+        setCompartmentVisibility((prev) => ({ ...prev, [compartmentName]: false }));
+    }, []);
 
-    // Navigation functions - 3-Level View Flow
-    const handleEnterCompartmentView = useCallback(() => {
-        if (selectedCompartment && viewMode === 'asset') {
-            console.log(`📦 Entering Compartment View for: ${selectedCompartment}`)
-            console.log(`📦 View mode transition: ${viewMode} → compartment`)
-            setViewMode('compartment')
-            setSelectedPart(null) // Clear part selection
-            setSelectedComponentType(null)
-            setIsolatedParts(new Set())
-            setHiddenParts(new Set())
-        } else {
-            console.log(`❌ Cannot enter Compartment View:`, {
-                selectedCompartment,
-                viewMode,
-                canEnter: selectedCompartment && viewMode === 'asset'
-            })
-        }
-    }, [selectedCompartment, viewMode])
-
-    const handleEnterHullPartView = useCallback(() => {
-        if (selectedComponentType && selectedCompartment && viewMode === 'compartment') {
-            console.log(`🔧 Entering Hull Part View for component type: ${selectedComponentType}`)
-            setViewMode('hullPart')
-        } else {
-            console.log(`❌ Cannot enter Hull Part View:`, {
-                selectedComponentType,
-                selectedCompartment,
-                viewMode,
-                canEnter: selectedComponentType && selectedCompartment && viewMode === 'compartment'
-            })
-        }
-    }, [selectedComponentType, selectedCompartment, viewMode])
-
-    const handleBackToAssetView = useCallback(() => {
-        console.log(`🔙 Returning to Asset View`)
-        console.log(`🔙 View mode transition: ${viewMode} → asset`)
-        setViewMode('asset')
-        setSelectedCompartment(null)
-        setSelectedPart(null)
-        setSelectedComponentType(null)
-        setIsolatedParts(new Set())
-        setHiddenParts(new Set())
-    }, [viewMode])
-
-    const handleBackToCompartmentView = useCallback(() => {
-        console.log(`🔙 Returning to Compartment View`)
-        console.log(`🔙 View mode transition: ${viewMode} → compartment`)
-        setViewMode('compartment')
-        setSelectedPart(null)
-        setSelectedComponentType(null)
-    }, [viewMode])
+    const handleIsolateCompartment = useCallback((compartmentName) => {
+        setIsolatedCompartments((prev) => {
+            if (prev.has(compartmentName)) {
+                const all = {};
+                Object.keys(organizedCompartments).forEach((k) => { all[k] = true; });
+                setCompartmentVisibility(all);
+                return new Set();
+            }
+            return new Set([compartmentName]);
+        });
+    }, [organizedCompartments]);
 
     const handleHidePart = useCallback((partId) => {
-        if (viewMode === 'compartment') {
-            // Compartment view mode: Hide part within compartment
-            console.log(`🙈 HIDE PART in compartment view: ${partId}`)
-            setHiddenParts(prev => new Set([...prev, partId]))
-        }
-    }, [viewMode])
+        setHiddenParts((prev) => new Set([...prev, partId]));
+    }, []);
 
     const togglePartVisibility = useCallback((partId) => {
         if (!partId) return;
         setHiddenParts((prev) => {
             const next = new Set(prev);
-            if (next.has(partId)) {
-                next.delete(partId);
-            } else {
-                next.add(partId);
-            }
+            next.has(partId) ? next.delete(partId) : next.add(partId);
             return next;
         });
     }, []);
 
-    // Context menu actions - 3-Level View aware
-    const handleContextAction = useCallback((action, compartmentOrPartId) => {
-        
-        console.log(`⚡ Context Action: ${action} on ${compartmentOrPartId}`, {
-            currentViewMode: viewMode,
-            selectedCompartment,
-            selectedPart,
-            selectedPartType: typeof selectedPart,
-            selectedPartDetails: typeof selectedPart === 'string' ? {
-                includesDash: selectedPart.includes('-'),
-                splitResult: selectedPart.split('-'),
-                compartmentFromPart: selectedPart.split('-')[0],
-                partNameFromPart: selectedPart.split('-').slice(1).join('-')
-            } : null
-        })
-        
+    const toggleCompartmentVisibility = useCallback((compartmentName) => {
+        setCompartmentVisibility((prev) => {
+            const next = { ...prev, [compartmentName]: !prev[compartmentName] };
+            applyMeshStates({
+                loadedCompartments: loadedCompartmentsRef.current,
+                compartmentVisibility: next,
+                componentTypeVisibility, viewMode, selectedCompartment,
+                selectedPart, selectedComponentType, hiddenParts,
+                scene: sceneRef.current,
+            });
+            return next;
+        });
+    }, [componentTypeVisibility, viewMode, selectedCompartment, selectedPart, selectedComponentType, hiddenParts]);
+
+    const toggleComponentTypeVisibility = useCallback((componentType) => {
+        setComponentTypeVisibility((prev) => {
+            const next = { ...prev, [componentType]: !prev[componentType] };
+            applyMeshStates({
+                loadedCompartments: loadedCompartmentsRef.current,
+                compartmentVisibility,
+                componentTypeVisibility: next,
+                viewMode, selectedCompartment, selectedPart, selectedComponentType, hiddenParts,
+                scene: sceneRef.current,
+            });
+            return next;
+        });
+    }, [compartmentVisibility, viewMode, selectedCompartment, selectedPart, selectedComponentType, hiddenParts]);
+
+    // ── Navigation ────────────────────────────────────────────────────────────
+
+    const enterCompartmentView = useCallback((compartmentName) => {
+        if (!compartmentName) return;
+
+        const alreadyLoaded = loadedCompartmentsRef.current[compartmentName];
+        const hasInterior   = alreadyLoaded && Object.values(alreadyLoaded.loadedComponents || {})
+            .some((c) => INTERIOR_TYPES.has(c.type));
+
+        setSelectedCompartment(compartmentName);
+        setSelectedPart(null);
+        setSelectedComponentType(null);
+        setViewMode('compartment');
+        setIsolatedParts(new Set());
+        setHiddenParts(new Set());
+
+        if (!hasInterior) {
+            loadCompartmentInterior(compartmentName).then((meshes) => {
+                if (meshes && meshes.length > 0) {
+                    const scene  = sceneRef.current;
+                    const camera = scene?.activeCamera;
+                    if (scene && camera) setTimeout(() => centerModel(scene, meshes, camera, true), 100);
+                }
+            });
+        }
+    }, [loadCompartmentInterior]);
+
+    const handleEnterCompartmentView  = useCallback(() => {
+        if (selectedCompartment && viewMode === 'asset') enterCompartmentView(selectedCompartment);
+    }, [selectedCompartment, viewMode, enterCompartmentView]);
+
+    const handleEnterHullPartView     = useCallback(() => {
+        if (selectedComponentType && selectedCompartment && viewMode === 'compartment') setViewMode('hullPart');
+    }, [selectedComponentType, selectedCompartment, viewMode]);
+
+    const handleBackToAssetView       = useCallback(() => {
+        setViewMode('asset');
+        setSelectedCompartment(null);
+        setSelectedPart(null);
+        setSelectedComponentType(null);
+        setIsolatedParts(new Set());
+        setHiddenParts(new Set());
+    }, []);
+
+    const handleBackToCompartmentView = useCallback(() => {
+        setViewMode('compartment');
+        setSelectedPart(null);
+        setSelectedComponentType(null);
+    }, []);
+
+    const handleSelectComponentType   = useCallback((componentType) => {
+        if (viewMode === 'compartment' && selectedCompartment) setSelectedComponentType(componentType);
+    }, [viewMode, selectedCompartment]);
+
+    // ── Context action dispatcher ─────────────────────────────────────────────
+
+    const handleContextAction = useCallback((action) => {
         switch (action) {
-            case 'compartmentView':
-                console.log(`⚡ Context Action: Entering Compartment View`)
-                handleEnterCompartmentView()
-                break
-            case 'hullPartView':
-                console.log(`⚡ Context Action: Entering Hull Part View`)
-                handleEnterHullPartView()
-                break
-            case 'backToAsset':
-                console.log(`⚡ Context Action: Back to Asset View`)
-                handleBackToAssetView()
-                break
-            case 'backToCompartment':
-                console.log(`⚡ Context Action: Back to Compartment View`)
-                handleBackToCompartmentView()
-                break
+            case 'compartmentView':   handleEnterCompartmentView();   break;
+            case 'hullPartView':      handleEnterHullPartView();      break;
+            case 'backToAsset':       handleBackToAssetView();        break;
+            case 'backToCompartment': handleBackToCompartmentView();  break;
             case 'hide':
                 if (viewMode === 'compartment' && selectedPart) {
-                    console.log(`⚡ Context Action: Hide Part ${selectedPart}`)
-                    handleHidePart(selectedPart)
-                    if (sceneRef.current) {
-                        sceneRef.current.meshes.forEach(mesh => {
-                            const pName = mesh.name;
-                            const pId = `${selectedCompartment}-${pName}`;
-                            if (pId === selectedPart) mesh.isVisible = false;
-                        });
-                    }
+                    handleHidePart(selectedPart);
+                    sceneRef.current?.meshes.forEach((mesh) => {
+                        if (`${selectedCompartment}-${mesh.name}` === selectedPart) {
+                            mesh.isVisible  = false;
+                            mesh.isPickable = false;
+                        }
+                    });
                 } else if (viewMode === 'asset' && selectedCompartment) {
-                    console.log(`⚡ Context Action: Hide Compartment ${selectedCompartment}`)
-                    handleHide(selectedCompartment)
+                    handleHide(selectedCompartment);
                 }
-                break
-            case 'fitToScreen':
+                break;
+            case 'fitToScreen': {
+                const scene = sceneRef.current;
+                if (!scene) break;
                 if (viewMode === 'compartment' && selectedCompartment) {
                     centerOnSelection('compartment', selectedCompartment);
                 } else if (viewMode === 'hullPart' && selectedPart) {
                     centerOnSelection('part', selectedPart);
                 } else {
-                    // Asset view — fit all loaded meshes
-                    const scene = sceneRef.current;
-                    if (scene) {
-                        const all = scene.meshes.filter(m => m.isVisible && m.getTotalVertices?.() > 0);
-                        centerModel(scene, all, scene.activeCamera);
-                    }
+                    const all = scene.meshes.filter((m) => m.isVisible && m.getTotalVertices?.() > 0);
+                    centerModel(scene, all, scene.activeCamera, true);
                 }
-                break
-            case 'showAll':
-                console.log(`⚡ Context Action: Show All`)
-                handleShowAll()
-                break
-            case 'reset':
-                console.log(`⚡ Context Action: Reset All`)
-                handleReset()
-                break
+                break;
+            }
+            case 'isolate': handleIsolateCompartment(selectedCompartment); break;
+            case 'showAll': handleShowAll();  break;
+            case 'reset':   handleReset();    break;
         }
-    }, [viewMode, selectedCompartment, selectedPart, handleEnterCompartmentView, handleEnterHullPartView, handleBackToAssetView, handleBackToCompartmentView, handleHide, handleHidePart, handleShowAll, handleReset])
+    }, [
+        viewMode, selectedCompartment, selectedPart,
+        handleEnterCompartmentView, handleEnterHullPartView,
+        handleBackToAssetView, handleBackToCompartmentView,
+        handleHide, handleHidePart, handleShowAll, handleReset,
+        handleIsolateCompartment, centerOnSelection,
+    ]);
 
-    // Handle 3-Level selection: Asset → Compartment → Hull Part
-    const handleCompartmentSelect = useCallback((compartmentName, partId, position, isRightClick, clickedMesh) => {
+    // ─────────────────────────────────────────────────────────────────────────
+    // ── handleCompartmentSelect
+    //
+    //  LEFT CLICK
+    //   asset view        → toggle compartment highlight (no view change)
+    //   compartment view  → toggle part selection
+    //   empty canvas      → deselect everything
+    //
+    //  RIGHT CLICK
+    //   any view          → select compartment/part + open context menu
+    //
+    //  SIDEBAR CLICK (partId === null)
+    //   → always enter compartment view (lazy-load interior)
+    // ─────────────────────────────────────────────────────────────────────────
 
-        // ─── RIGHT CLICK ──────────────────────────────────────────────
+    const handleCompartmentSelect = useCallback((compartmentName, partId, position, isRightClick) => {
+
+        // ── RIGHT CLICK → select + open context menu ─────────────────────────
         if (isRightClick) {
             if (compartmentName) setSelectedCompartment(compartmentName);
-            if (partId && viewMode === 'compartment') setSelectedPart(partId);
+            if (partId && (viewMode === 'compartment' || viewMode === 'hullPart')) {
+                setSelectedPart(partId);
+            }
             if (position) setContextMenu({ visible: true, position });
             return;
         }
 
-        // ─── LEFT CLICK ───────────────────────────────────────────────
+        // ── Close context menu on any left click ─────────────────────────────
         setContextMenu({ visible: false, position: { x: 0, y: 0 } });
 
-        // Sidebar click (partId is null) — load compartment
+        // ── SIDEBAR CLICK (no partId) → enter compartment view ───────────────
         if (!partId && compartmentName) {
-            loadCompartment(compartmentName);          // ✅ always load fresh
-            setSelectedCompartment(compartmentName);
-            setSelectedPart(null);
-            setSelectedComponentType(null);
-            setViewMode('compartment');
-            setIsolatedParts(new Set());
-            setHiddenParts(new Set());
+            enterCompartmentView(compartmentName);
             return;
         }
 
-        // Canvas click with a part
-        if (viewMode === 'compartment' && compartmentName === selectedCompartment) {
-            setSelectedPart(prev => prev === partId ? null : partId);
-            return;
-        }
-
-        if (viewMode === 'hullPart' && compartmentName === selectedCompartment) {
-            setSelectedPart(prev => prev === partId ? null : partId);
-            return;
-        }
-
-        // Canvas click in asset view — select compartment
+        // ── LEFT CLICK in ASSET view → highlight only ────────────────────────
         if (viewMode === 'asset' && compartmentName) {
+            setSelectedCompartment((prev) => (prev === compartmentName ? null : compartmentName));
+            setSelectedPart(null);
+            return;
+        }
+
+        // ── LEFT CLICK in COMPARTMENT view → toggle part ─────────────────────
+        if ((viewMode === 'compartment' || viewMode === 'hullPart')
+            && compartmentName === selectedCompartment) {
+            setSelectedPart((prev) => (prev === partId ? null : partId));
+            return;
+        }
+
+        // ── LEFT CLICK on a different compartment mesh (edge case) ────────────
+        if ((viewMode === 'compartment' || viewMode === 'hullPart') && compartmentName) {
             setSelectedCompartment(compartmentName);
             setSelectedPart(null);
         }
-    }, [viewMode, selectedCompartment, loadCompartment]);
+    }, [viewMode, selectedCompartment, enterCompartmentView]);
 
-    useEffect(() => {
-        handleCompartmentSelectRef.current = handleCompartmentSelect;
-    }, [handleCompartmentSelect]);
+    useEffect(() => { handleCompartmentSelectRef.current = handleCompartmentSelect; }, [handleCompartmentSelect]);
+
+    // ── Babylon engine init (runs once) ───────────────────────────────────────
 
     useEffect(() => {
         if (!canvasRef.current) return;
 
-        // Create Babylon.js engine with alpha support
-        const engine = new Engine(canvasRef.current, true, { 
-            alpha: true,
-            premultipliedAlpha: false,
-            preserveDrawingBuffer: true
+        const engine = new Engine(canvasRef.current, true, {
+            alpha: true, premultipliedAlpha: false,
+            preserveDrawingBuffer: true, adaptToDeviceRatio: true,
         });
         engineRef.current = engine;
         setTimeout(() => engine.resize(), 100);
 
-        // Create scene with an opaque background to avoid washed-out compositing
         const scene = new Scene(engine);
-        scene.clearColor = new Color4(0.878, 0.914, 0.941, 1.0); // #e0e9f0
+        scene.clearColor = new Color4(0.878, 0.914, 0.941, 1.0);
         sceneRef.current = scene;
 
-        const camera = new ArcRotateCamera(
-            "Camera",
-            -Math.PI / 2,   // alpha: face the ship from the side
-            Math.PI / 3,    // beta: slight top-down angle
-            100,
-            Vector3.Zero(),
-            scene
-        );
+        const camera = new ArcRotateCamera('Camera', -Math.PI / 2, Math.PI / 3, 100, Vector3.Zero(), scene);
+        camera.attachControl(canvasRef.current, true);
+        camera.inertia              = 0.88;
+        camera.angularSensibilityX  = 700;
+        camera.angularSensibilityY  = 700;
+        camera.panningSensibility   = 80;
+        camera.wheelDeltaPercentage = 0.012;
+        camera.pinchDeltaPercentage = 0.012;
+        camera.minZ                 = 0.5;
+        camera.maxZ                 = 8000;
+        camera.lowerRadiusLimit     = 1;
+        camera.upperRadiusLimit     = 5000;
+        camera.lowerBetaLimit       = 0.05;
+        camera.upperBetaLimit       = Math.PI * 0.49;
+
+        const hemi = new HemisphericLight('light', new Vector3(0, 1, 0), scene);
+        hemi.intensity   = 1.2;
+        hemi.diffuse     = new Color3(1, 1, 1);
+        hemi.specular    = new Color3(0, 0, 0);
+        hemi.groundColor = new Color3(0.4, 0.4, 0.4);
+
+        const dir1 = new DirectionalLight('dir1', new Vector3(-1, -1, -0.5), scene);
+        dir1.intensity = 0.5; dir1.specular = new Color3(0, 0, 0);
+
+        const dir2 = new DirectionalLight('dir2', new Vector3(1, -0.5, 0.5), scene);
+        dir2.intensity = 0.3; dir2.specular = new Color3(0, 0, 0);
+
+        scene.skipFrustumClipping         = false;
+        scene.autoClear                   = true;
+        scene.autoClearDepthAndStencil    = true;
+        scene.blockMaterialDirtyMechanism = true;
+        engine.setHardwareScalingLevel(1.0);
+
+        // ── Pointer handling ──────────────────────────────────────────────────
         const canvas = canvasRef.current;
-        camera.attachControl(canvas, true);
-
-        // Smooth, natural feel
-        camera.inertia = 0.92;                  // high inertia = smooth glide
-        camera.angularSensibilityX = 800;       // lower = more responsive horizontal
-        camera.angularSensibilityY = 800;       // lower = more responsive vertical
-        camera.panningSensibility = 100;        // pan speed
-        camera.wheelDeltaPercentage = 0.01;     // smooth zoom
-        camera.pinchDeltaPercentage = 0.01;
-
-        // Limits
-        camera.minZ = 1;
-        camera.maxZ = 5000;
-        camera.lowerRadiusLimit = 1;
-        camera.upperRadiusLimit = 3000;
-        camera.lowerBetaLimit = 0.1;           // don't go below ground
-        camera.upperBetaLimit = Math.PI / 2;   // don't flip over the top
-
-        // Let Babylon handle all pointer input natively (no manual mouse listeners)
-        camera.useAutoRotationBehavior = false;
-
-        const handleContextMenu = (event) => {
-            event.preventDefault();
-        };
-
-        const handleCanvasPickAt = (offsetX, offsetY, clientX, clientY, isRightClick) => {
-            const pickResult = scene.pick(offsetX, offsetY);
-            const position = { x: clientX, y: clientY };
-
-            if (pickResult.hit && pickResult.pickedMesh?.metadata?.compartmentName) {
-                const { compartmentName, componentType } = pickResult.pickedMesh.metadata;
-                const partName = pickResult.pickedMesh.name || 'unnamed';
-                const partId = `${compartmentName}-${partName}`;
-                const partPosition = pickResult.pickedPoint ? {
-                    x: Number(pickResult.pickedPoint.x.toFixed(3)),
-                    y: Number(pickResult.pickedPoint.y.toFixed(3)),
-                    z: Number(pickResult.pickedPoint.z.toFixed(3))
-                } : null;
-
-                handleCompartmentSelectRef.current?.(
-                    compartmentName, partId, position,
-                    isRightClick, pickResult.pickedMesh, partPosition
-                );
-            } else {
-                // Clicked empty space
-                if (!isRightClick) {
-                    setContextMenu({ visible: false, position: { x: 0, y: 0 } });
-                }
-            }
-        };
-
-        let pointerDownX = 0;
-        let pointerDownY = 0;
-        let isDrag = false;
+        let pointerDownX = 0, pointerDownY = 0, isDrag = false;
 
         const onPointerDown = (e) => {
-            pointerDownX = e.clientX;
-            pointerDownY = e.clientY;
-            isDrag = false;
+            pointerDownX = e.clientX; pointerDownY = e.clientY; isDrag = false;
         };
-
         const onPointerMove = (e) => {
-            const dx = e.clientX - pointerDownX;
-            const dy = e.clientY - pointerDownY;
+            const dx = e.clientX - pointerDownX, dy = e.clientY - pointerDownY;
             if (Math.sqrt(dx * dx + dy * dy) > 6) isDrag = true;
         };
 
-        const onPointerUp = (e) => {
-            if (isDrag) return;                      // was a drag, skip selection
-            if (e.button !== 0) return;             // only left click here
-            handleCanvasPickAt(e.offsetX, e.offsetY, e.clientX, e.clientY, false);
+        /**
+         * FIX: Pass predicate `m => m.isVisible && m.isPickable` to scene.pick
+         * so that hidden meshes (e.g. shells of other compartments in compartment view)
+         * are NEVER hit-tested and do not swallow clicks meant for visible interior meshes.
+         */
+        const PICK_PREDICATE = (m) => m.isVisible && m.isPickable;
+
+        const pick = (clientX, clientY, isRight) => {
+            const rect    = canvas.getBoundingClientRect();
+            const canvasX = clientX - rect.left;
+            const canvasY = clientY - rect.top;
+
+            // FIX: supply predicate — only visible+pickable meshes are candidates
+            const r   = scene.pick(canvasX, canvasY, PICK_PREDICATE);
+            const pos = { x: clientX, y: clientY };
+
+            if (r.hit && r.pickedMesh?.metadata?.compartmentName) {
+                const { compartmentName } = r.pickedMesh.metadata;
+                const partId = `${compartmentName}-${r.pickedMesh.name || 'unnamed'}`;
+                handleCompartmentSelectRef.current?.(compartmentName, partId, pos, isRight, r.pickedMesh);
+            } else if (!isRight) {
+                // Click on empty canvas → deselect everything
+                setSelectedCompartment(null);
+                setSelectedPart(null);
+                setContextMenu({ visible: false, position: { x: 0, y: 0 } });
+            }
+            // Right-click on empty canvas → no-op (no target to act on)
         };
 
-        const onContextMenuEvent = (e) => {
-            e.preventDefault();
-            if (isDrag) return;
-            handleCanvasPickAt(e.offsetX, e.offsetY, e.clientX, e.clientY, true);
-        };
+        const onPointerUp = (e) => { if (!isDrag && e.button === 0) pick(e.clientX, e.clientY, false); };
+        const onCtxMenu   = (e) => { e.preventDefault(); if (!isDrag) pick(e.clientX, e.clientY, true); };
 
         canvas.addEventListener('pointerdown', onPointerDown);
         canvas.addEventListener('pointermove', onPointerMove);
-        canvas.addEventListener('pointerup', onPointerUp);
-        canvas.addEventListener('contextmenu', onContextMenuEvent);
-
-        canvas.style.cursor = 'grab';
+        canvas.addEventListener('pointerup',   onPointerUp);
+        canvas.addEventListener('contextmenu', onCtxMenu);
+        canvas.style.cursor      = 'grab';
         canvas.style.touchAction = 'none';
 
-        // Create lights
-        const hemisphericLight = new HemisphericLight("light", new Vector3(0, 1, 0), scene);
-        hemisphericLight.intensity = 1.2;
-        hemisphericLight.diffuse = new Color3(1, 1, 1);
-        hemisphericLight.specular = new Color3(0, 0, 0);
-        hemisphericLight.groundColor = new Color3(0.4, 0.4, 0.4);
-
-        const dirLight1 = new DirectionalLight("dirLight1", new Vector3(-1, -1, -0.5), scene);
-        dirLight1.intensity = 0.5;
-        dirLight1.specular = new Color3(0, 0, 0);
-
-        const dirLight2 = new DirectionalLight("dirLight2", new Vector3(1, -0.5, 0.5), scene);
-        dirLight2.intensity = 0.3;
-        dirLight2.specular = new Color3(0, 0, 0);
-
-        // ✅ Only re-render when something changes (huge FPS saving when static)
-        scene.skipFrustumClipping = false;
-        engine.setHardwareScalingLevel(1.0);
-
-        // ✅ Reduce overdraw
-        scene.autoClear = true;
-        scene.autoClearDepthAndStencil = true;
-
-        // ✅ Use incremental rendering to avoid blocking the main thread
-        scene.blockMaterialDirtyMechanism = true;
-
-        const loadAllModels = async () => {
-            let allFiles = [];
-            Object.values(initialOrganizedCompartments).forEach(compartment => {
-                Object.values(compartment.components).forEach(comp => {
-                    allFiles.push({
-                        type: comp.type,
-                        data: comp,
-                        compartmentName: compartment.compartmentName
-                    });
-                });
+        // ── Initial load: shells only ─────────────────────────────────────────
+        const loadAllShells = async () => {
+            const shellFiles = [];
+            Object.values(initialOrganizedCompartments).forEach((compartment) => {
+                const shellComp = compartment.components['shells'] || compartment.components['shell'];
+                if (shellComp) shellFiles.push({ type: shellComp.type, data: shellComp, compartmentName: compartment.compartmentName });
             });
 
-            setLoadingProgress({ loaded: 0, total: allFiles.length });
-            
+            setLoadingProgress({ loaded: 0, total: shellFiles.length });
+
+            const newLoaded = {};
+            Object.keys(initialOrganizedCompartments).forEach((k) => {
+                newLoaded[k] = { ...initialOrganizedCompartments[k], loadedComponents: {} };
+            });
+
             let allMeshes = [];
-            
-            const newLoadedCompartments = {};
-            Object.keys(initialOrganizedCompartments).forEach(k => {
-                newLoadedCompartments[k] = { ...initialOrganizedCompartments[k], loadedComponents: {} };
-            });
+            const BATCH = 6;
+            for (let i = 0; i < shellFiles.length; i += BATCH) {
+                const batch = shellFiles.slice(i, i + BATCH);
+                const results = await Promise.all(
+                    batch.map(({ type, data, compartmentName }) =>
+                        loadGLBFile(scene, data.path, compartmentName, data.name, type).then((result) => {
+                            setLoadingProgress((prev) => ({ ...prev, loaded: prev.loaded + 1 }));
+                            return { type, data, result, compartmentName };
+                        })
+                    )
+                );
+                results.forEach(({ type, data, result, compartmentName }) => {
+                    if (result.success) {
+                        newLoaded[compartmentName].loadedComponents[type] = { ...data, meshes: result.meshes };
+                        allMeshes.push(...result.meshes);
+                    }
+                });
+            }
 
-            const results = await Promise.all(
-                allFiles.map(async ({ type, data, compartmentName }) => {
-                    const result = await loadGLBFile(scene, data.path, compartmentName, data.name, type);
-                    setLoadingProgress(prev => ({ ...prev, loaded: prev.loaded + 1 }));
-                    return { type, data, result, compartmentName };
-                })
-            );
+            setLoadedCompartments(newLoaded);
+            loadedCompartmentsRef.current = newLoaded;
 
-            results.forEach(({ type, data, result, compartmentName }) => {
-                if (result.success) {
-                    newLoadedCompartments[compartmentName].loadedComponents[type] = {
-                        ...data,
-                        meshes: result.meshes
-                    };
-                    allMeshes.push(...result.meshes);
-                }
-            });
-
-            setLoadedCompartments(newLoadedCompartments);
-            // Set the ref so we can safely dispose them later if a single compartment is clicked
-            loadedCompartmentsRef.current = newLoadedCompartments;
-            
-            const initialVisibility = {};
-            Object.keys(newLoadedCompartments).forEach(compartmentName => {
-                initialVisibility[compartmentName] = true;
-            });
-            setCompartmentVisibility(initialVisibility);
+            const initVis = {};
+            Object.keys(newLoaded).forEach((n) => { initVis[n] = true; });
+            setCompartmentVisibility(initVis);
 
             if (allMeshes.length > 0) {
                 setTimeout(() => {
-                    const scene = sceneRef.current;
-                    if (!scene) return;
-                    centerModel(scene, allMeshes, scene.activeCamera);
-                }, 500);
+                    if (sceneRef.current) centerModel(sceneRef.current, allMeshes, sceneRef.current.activeCamera, false);
+                }, 300);
             }
-            
-            setTimeout(() => setLoadingProgress({ loaded: 0, total: 0 }), 500);
+            setTimeout(() => setLoadingProgress({ loaded: 0, total: 0 }), 400);
         };
 
-        loadAllModels();
+        loadAllShells();
+        engine.runRenderLoop(() => scene.render());
 
-        // Render loop
-        engine.runRenderLoop(() => {
-            scene.render();
-        });
+        const onResize = () => engine.resize();
+        window.addEventListener('resize', onResize);
 
-        // Handle window resize
-        const handleResize = () => {
-            engine.resize();
-        };
-        window.addEventListener('resize', handleResize);
-
-        // Cleanup function
         return () => {
-            window.removeEventListener('resize', handleResize);
+            window.removeEventListener('resize', onResize);
             canvas.removeEventListener('pointerdown', onPointerDown);
             canvas.removeEventListener('pointermove', onPointerMove);
-            canvas.removeEventListener('pointerup', onPointerUp);
-            canvas.removeEventListener('contextmenu', onContextMenuEvent);
+            canvas.removeEventListener('pointerup',   onPointerUp);
+            canvas.removeEventListener('contextmenu', onCtxMenu);
             scene.dispose();
             engine.dispose();
         };
     }, []);
 
-    // Toggle compartment visibility
-    const toggleCompartmentVisibility = useCallback((compartmentName) => {
-        setCompartmentVisibility(prev => {
-            const newVisibility = { ...prev, [compartmentName]: !prev[compartmentName] };
-            
-            // Apply visibility to all meshes in this compartment
-            if (loadedCompartments[compartmentName]) {
-                Object.values(loadedCompartments[compartmentName].loadedComponents).forEach(component => {
-                    if (component.meshes) {
-                        const isIsolated = isolatedCompartments.size > 0;
-                        const isThisIsolated = isolatedCompartments.has(compartmentName);
-                        
-                        component.meshes.forEach(mesh => {
-                            let shouldBeVisible;
-                            if (isIsolated) {
-                                // In isolation mode, only show isolated compartments
-                                shouldBeVisible = isThisIsolated && newVisibility[compartmentName] && componentTypeVisibility[component.type];
-                            } else {
-                                // Normal mode
-                                shouldBeVisible = newVisibility[compartmentName] && componentTypeVisibility[component.type];
-                            }
-                            mesh.isVisible = shouldBeVisible;
-                        });
-                    }
-                });
+    // ── Breadcrumbs ───────────────────────────────────────────────────────────
+
+    const getFunctionalityGroup = (name) => {
+        if (!name) return '';
+        const u = name.toUpperCase();
+        if (/^CARGO_TANK/.test(u))      return 'Cargo';
+        if (/^AFT_PEAK/.test(u))        return 'Aft Peak';
+        if (/^FORE_PEAK/.test(u))       return 'Fore Peak';
+        if (/^ENGINE_ROOM/.test(u))     return 'Engine Room';
+        if (/^CHAIN_LOCKER/.test(u))    return 'Chain Locker';
+        if (/^DISTILLED_WATER/.test(u)) return 'Distilled Water';
+        if (/^FWD_DEEP/.test(u))        return 'Fwd Deep';
+        if (/^POTABLE_WATER/.test(u))   return 'Potable Water';
+        if (/^PUMP_ROOM/.test(u))       return 'Pump Room';
+        if (/^SLOP_TANK/.test(u))       return 'Slop Tank';
+        if (/^STEERING_GEAR/.test(u))   return 'Steering Gear';
+        if (/^STERN_TB/.test(u))        return 'Stern TB';
+        if (/^STORAGE_SPACES/.test(u))  return 'Storage Spaces';
+        return name.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+    };
+
+    const renderBreadcrumbs = () => {
+        const sep  = <span style={{ margin: '0 8px', color: 'rgba(255,255,255,0.4)' }}>/</span>;
+        const link = (label, onClick) => (
+            <span
+                style={{ color: '#4DA2FF', cursor: 'pointer' }}
+                onClick={onClick}
+                onMouseEnter={(e) => (e.target.style.color = '#73bbff')}
+                onMouseLeave={(e) => (e.target.style.color = '#4DA2FF')}
+            >
+                {label}
+            </span>
+        );
+
+        const crumbs = [link('TEST FPSO', handleReset)];
+
+        if (selectedCompartment && viewMode !== 'asset') {
+            const fg = getFunctionalityGroup(selectedCompartment);
+            if (fg) { crumbs.push(sep); crumbs.push(<span key="fg" style={{ color: '#4DA2FF' }}>{fg}</span>); }
+            crumbs.push(sep);
+            crumbs.push(
+                selectedPart
+                    ? link(selectedCompartment.replace(/_/g, ' '), () =>
+                        handleCompartmentSelectRef.current?.(selectedCompartment, null, null, false))
+                    : <span key="comp" style={{ color: 'rgba(255,255,255,0.92)' }}>{selectedCompartment.replace(/_/g, ' ')}</span>
+            );
+            if (selectedPart) {
+                crumbs.push(sep);
+                crumbs.push(<span key="part" style={{ color: 'rgba(255,255,255,0.92)' }}>{selectedPart.split('-').slice(1).join('-')}</span>);
             }
-            
-            return newVisibility;
-        });
-    }, [loadedCompartments, componentTypeVisibility, isolatedCompartments]);
-
-    // Toggle component type visibility
-    const toggleComponentTypeVisibility = useCallback((componentType) => {
-        setComponentTypeVisibility(prev => {
-            const newVisibility = { ...prev, [componentType]: !prev[componentType] };
-            
-            // Apply visibility to all meshes of this type
-            Object.values(loadedCompartments).forEach(compartment => {
-                Object.entries(compartment.loadedComponents).forEach(([type, component]) => {
-                    if (type === componentType && component.meshes) {
-                        const isIsolated = isolatedCompartments.size > 0;
-                        const isThisIsolated = isolatedCompartments.has(compartment.compartmentName);
-                        
-                        component.meshes.forEach(mesh => {
-                            let shouldBeVisible;
-                            if (isIsolated) {
-                                // In isolation mode, only show isolated compartments
-                                shouldBeVisible = isThisIsolated && newVisibility[componentType] && compartmentVisibility[compartment.compartmentName];
-                            } else {
-                                // Normal mode
-                                shouldBeVisible = newVisibility[componentType] && compartmentVisibility[compartment.compartmentName];
-                            }
-                            mesh.isVisible = shouldBeVisible;
-                        });
-                    }
-                });
-            });
-            
-            return newVisibility;
-        });
-    }, [loadedCompartments, compartmentVisibility, isolatedCompartments]);
-
-    // Apply highlighting and visibility for 3-Level View System
-    useEffect(() => {
-        if (Object.keys(loadedCompartments).length === 0) return;
-        
-        Object.values(loadedCompartments).forEach(compartment => {
-            Object.values(compartment.loadedComponents).forEach(component => {
-                if (component.meshes) {
-                    component.meshes.forEach(mesh => {
-                        if (mesh.material) {
-                            // Create unique part ID for individual mesh selection
-                            const partName = mesh.name || `unnamed_${mesh.id}`;
-                            const partId = `${compartment.compartmentName}-${partName}`;
-                            
-                            // Determine visibility based on 3-level view system
-                            let shouldBeVisible = compartmentVisibility[compartment.compartmentName] !== false && 
-                                                 componentTypeVisibility[component.type] !== false;
-                            
-                            if (viewMode === 'compartment' && selectedCompartment) {
-                                // Compartment View: Only show the selected compartment
-                                shouldBeVisible = (compartment.compartmentName === selectedCompartment) && shouldBeVisible;
-                            } else if (viewMode === 'hullPart' && selectedCompartment) {
-                                // Hull Part View: Only show the compartment containing the selected part
-                                shouldBeVisible = (compartment.compartmentName === selectedCompartment) && shouldBeVisible;
-                            }
-                            
-                            // Apply part-level visibility
-                            let partVisible = shouldBeVisible;
-                            
-                            if (viewMode === 'hullPart' && selectedComponentType) {
-                                // Hull Part View: Show selected component type in selected compartment
-                                partVisible = (component.type === selectedComponentType) && shouldBeVisible;
-                            } else if (viewMode === 'compartment' && selectedCompartment === compartment.compartmentName) {
-                                // Compartment View: Show all parts, but check for hidden parts
-                                if (hiddenParts.has(partId)) {
-                                    partVisible = false;
-                                }
-                            }
-                            
-                            // Apply visibility
-                            mesh.isVisible = partVisible;
-                            
-                            // Handle selection highlighting
-                            const isCompartmentSelected = selectedCompartment === compartment.compartmentName && viewMode === 'asset';
-                            const isPartSelected = selectedPart === partId && viewMode === 'compartment';
-                            
-                            if (partVisible) {
-                                if (isPartSelected) {
-                                    // Strong highlight for selected part
-                                    mesh.material.emissiveColor = new Color3(0, 0.5, 0); // Green glow
-                                    mesh.material.emissiveIntensity = 0.5;
-                                } else if (isCompartmentSelected) {
-                                    // Mild highlight for compartment selection in asset view
-                                    mesh.material.emissiveColor = new Color3(0, 0.2, 0); // Green glow
-                                    mesh.material.emissiveIntensity = 0.2;
-                                } else if (viewMode === 'compartment' && selectedCompartment === compartment.compartmentName) {
-                                    // Very mild highlight for parts in compartment view
-                                    mesh.material.emissiveColor = new Color3(0, 0.1, 0); // Green glow
-                                    mesh.material.emissiveIntensity = 0.1;
-                                } else {
-                                    // No highlight
-                                    mesh.material.emissiveColor = new Color3(0, 0, 0);
-                                    mesh.material.emissiveIntensity = 0;
-                                }
-
-                                // White edge highlight for selected part
-                                const componentType = component.type;
-                                if (isPartSelected) {
-                                    // Enable bright edge rendering for selected part
-                                    if (!mesh._edgesRendererEnabled) {
-                                        mesh.enableEdgesRendering(0.9, true);
-                                    }
-                                    mesh.edgesWidth = 6.0;
-                                    mesh.edgesColor = new Color4(1, 1, 1, 1.0);  // solid white
-                                } else if (componentType === 'shells' || componentType === 'shell') {
-                                    // Keep subtle grid edges on shells
-                                    if (!mesh._edgesRendererEnabled) {
-                                        mesh.enableEdgesRendering(0.9, true);
-                                    }
-                                    mesh.edgesWidth = 2.0;
-                                    mesh.edgesColor = new Color4(1, 1, 1, 0.85);
-                                } else {
-                                    // Disable edges on non-shell, non-selected
-                                    if (mesh._edgesRenderer) {
-                                        mesh.disableEdgesRendering();
-                                    }
-                                }
-                            } else {
-                                // Reset emissive but preserve component color
-                                mesh.material.emissiveColor = new Color3(0, 0, 0);
-                                mesh.material.emissiveIntensity = 0;
-                            }
-                        }
-                    });
-                }
-            });
-        });
-    }, [selectedCompartment, selectedPart, selectedComponentType, viewMode, loadedCompartments, compartmentVisibility, componentTypeVisibility, hiddenParts]);
-
-    // Auto-center when selection changes
-    useEffect(() => {
-        if (viewMode === 'compartment' && selectedCompartment) {
-            // Center on selected compartment
-            setTimeout(() => centerOnSelection('compartment', selectedCompartment), 100);
-        } else if (viewMode === 'hullPart' && selectedPart) {
-            // Center on selected part
-            setTimeout(() => centerOnSelection('part', selectedPart), 100);
-        } else if (viewMode === 'hullPart' && selectedComponentType && selectedCompartment) {
-            setTimeout(() => centerOnSelection('compartment', selectedCompartment), 100);
+        } else {
+            crumbs.push(sep);
+            crumbs.push(<span key="full" style={{ color: 'rgba(255,255,255,0.92)' }}>Full Asset</span>);
         }
-    }, [viewMode, selectedCompartment, selectedPart, selectedComponentType, centerOnSelection]);
 
-    // Auto-center when isolation changes
-    useEffect(() => {
-        if (isolatedCompartments.size === 1) {
-            const isolatedCompartment = Array.from(isolatedCompartments)[0];
-            setTimeout(() => centerOnSelection('compartment', isolatedCompartment), 100);
-        } else if (isolatedParts.size === 1) {
-            const isolatedPart = Array.from(isolatedParts)[0];
-            setTimeout(() => centerOnSelection('part', isolatedPart), 100);
-        }
-    }, [isolatedCompartments, isolatedParts, centerOnSelection]);
-
-    const getTotalLoadedComponents = () => {
-        return Object.values(loadedCompartments).reduce((total, compartment) => 
-            total + Object.keys(compartment.loadedComponents).length, 0
+        return (
+            <div style={{ display: 'flex', alignItems: 'center', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                {crumbs}
+            </div>
         );
     };
 
     const isLoading = loadingProgress.total > 0 && loadingProgress.loaded < loadingProgress.total;
 
-    const getFunctionalityGroup = (name) => {
-        if (!name) return '';
-        const upper = name.toUpperCase();
-        if (/^CARGO_TANK/.test(upper)) return 'Cargo';
-        if (/^AFT_PEAK/.test(upper)) return 'Aft Peak';
-        if (/^FORE_PEAK/.test(upper)) return 'Fore Peak';
-        if (/^ENGINE_ROOM/.test(upper)) return 'Engine Room';
-        if (/^CHAIN_LOCKER/.test(upper)) return 'Chain Locker';
-        if (/^DISTILLED_WATER/.test(upper)) return 'Distilled Water';
-        if (/^FWD_DEEP/.test(upper)) return 'Fwd Deep';
-        if (/^POTABLE_WATER/.test(upper)) return 'Potable Water';
-        if (/^PUMP_ROOM/.test(upper)) return 'Pump Room';
-        if (/^SLOP_TANK/.test(upper)) return 'Slop Tank';
-        if (/^STEERING_GEAR/.test(upper)) return 'Steering Gear';
-        if (/^STERN_TB/.test(upper)) return 'Stern TB';
-        if (/^STORAGE_SPACES/.test(upper)) return 'Storage Spaces';
-        return name.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
-    };
-
-    const renderBreadcrumbs = () => {
-        let crumbs = [
-            <span key="root" style={{color: '#4DA2FF', cursor: 'pointer', transition: 'color 0.2s'}} 
-                  onClick={handleReset}
-                  onMouseEnter={e => e.target.style.color = '#73bbff'}
-                  onMouseLeave={e => e.target.style.color = '#4DA2FF'}>
-                TEST FPSO
-            </span>
-        ];
-        
-        if (selectedCompartment && viewMode !== 'asset') {
-            const funcGroup = getFunctionalityGroup(selectedCompartment);
-            if (funcGroup) {
-                crumbs.push(<span key="sep1" style={{margin: '0 8px', color: 'rgba(255,255,255,0.4)'}}>/</span>);
-                crumbs.push(<span key="func" style={{color: '#4DA2FF'}}>{funcGroup}</span>);
-            }
-            
-            crumbs.push(<span key="sep2" style={{margin: '0 8px', color: 'rgba(255,255,255,0.4)'}}>/</span>);
-            crumbs.push(
-                <span key="comp" 
-                      style={{color: selectedPart ? '#4DA2FF' : 'rgba(255,255,255,0.92)', cursor: selectedPart ? 'pointer' : 'default', transition: 'color 0.2s'}} 
-                      onClick={() => selectedPart && handleCompartmentSelectRef.current?.(selectedCompartment, null, null, false, null, null)}
-                      onMouseEnter={e => selectedPart && (e.target.style.color = '#73bbff')}
-                      onMouseLeave={e => selectedPart && (e.target.style.color = '#4DA2FF')}>
-                    {selectedCompartment.replace(/_/g, ' ')}
-                </span>
-            );
-            
-            if (selectedPart) {
-                const partName = selectedPart.includes('-') ? selectedPart.split('-').slice(1).join('-') : selectedPart;
-                crumbs.push(<span key="sep3" style={{margin: '0 8px', color: 'rgba(255,255,255,0.4)'}}>/</span>);
-                crumbs.push(<span key="part" style={{color: 'rgba(255,255,255,0.92)'}}>{partName}</span>);
-            }
-        } else {
-            crumbs.push(<span key="sep1" style={{margin: '0 8px', color: 'rgba(255,255,255,0.4)'}}>/</span>);
-            crumbs.push(<span key="full" style={{color: 'rgba(255,255,255,0.92)'}}>Full Asset</span>);
-        }
-        
-        return <div style={{ 
-            display: 'flex',
-            alignItems: 'center',
-            fontSize: 14,
-            fontWeight: 600,
-            whiteSpace: 'nowrap'
-        }}>{crumbs}</div>;
-    };
-
+    // ── Render ────────────────────────────────────────────────────────────────
     return (
         <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
+
             <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 5000 }}>
                 <AppHeader breadcrumbs={renderBreadcrumbs()} />
             </div>
@@ -1133,40 +1066,31 @@ const BabylonScene = () => {
                     position: 'fixed',
                     top: HEADER_HEIGHT,
                     left: SIDEBAR_WIDTH,
-                    width: `calc(100% - ${SIDEBAR_WIDTH}px)`,
+                    width:  `calc(100% - ${SIDEBAR_WIDTH}px - ${viewMode !== 'asset' ? 220 : 0}px)`,
                     height: `calc(100vh - ${HEADER_HEIGHT}px)`,
                     display: 'block',
                     outline: 'none',
                     touchAction: 'none',
                     background: 'linear-gradient(180deg, #dce8f0 0%, #c8dae8 100%)',
-                    zIndex: 1
+                    zIndex: 1,
                 }}
             />
 
             {Object.keys(loadedCompartments).length === 0 && !isLoading && (
                 <div style={{
-                    position: 'fixed',
-                    top: '50%',
-                    left: '50%',
+                    position: 'fixed', top: '50%', left: '50%',
                     transform: 'translate(-50%, -50%)',
-                    zIndex: 500,
-                    textAlign: 'center',
-                    pointerEvents: 'none',
-                    color: '#5a7fa8',
-                    fontFamily: 'Inter, system-ui, sans-serif'
+                    zIndex: 500, textAlign: 'center', pointerEvents: 'none',
+                    color: '#5a7fa8', fontFamily: 'Inter, system-ui, sans-serif',
                 }}>
                     <svg width="64" height="64" fill="none" stroke="currentColor"
                         strokeWidth="1.2" viewBox="0 0 24 24"
                         style={{ opacity: 0.4, marginBottom: 16 }}>
-                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-                        <polyline points="9 22 9 12 15 12 15 22"/>
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                        <polyline points="9 22 9 12 15 12 15 22" />
                     </svg>
-                    <div style={{ fontSize: 16, fontWeight: 600, opacity: 0.6 }}>
-                        Select a compartment from the sidebar
-                    </div>
-                    <div style={{ fontSize: 13, opacity: 0.4, marginTop: 6 }}>
-                        Click any compartment name to load its 3D model
-                    </div>
+                    <div style={{ fontSize: 16, fontWeight: 600, opacity: 0.6 }}>Select a compartment from the sidebar</div>
+                    <div style={{ fontSize: 13, opacity: 0.4, marginTop: 6 }}>Click any compartment name to load its 3D model</div>
                 </div>
             )}
 
@@ -1202,13 +1126,21 @@ const BabylonScene = () => {
                     gaugingPointsEnabled={gaugingPointsEnabled}
                     setGaugingPointsEnabled={setGaugingPointsEnabled}
                     topOffset={54}
-                    hideBottomActions={true}
-                    hideGaugingPoints={true}
-                    hideComponentTypes={true}
+                    hideBottomActions
+                    hideGaugingPoints
+                    hideComponentTypes
                 />
             )}
 
+            {viewMode !== 'asset' && (
+                <ComponentTypesRail
+                    componentTypeVisibility={componentTypeVisibility}
+                    onToggle={toggleComponentTypeVisibility}
+                />
+            )}
 
+            {/* ── Axis / Rotation controls (always visible bottom-right) ── */}
+            <AxisControls sceneRef={sceneRef} />
 
             <ContextMenu
                 position={contextMenu.position}
@@ -1225,4 +1157,4 @@ const BabylonScene = () => {
     );
 };
 
-export default BabylonScene; 
+export default BabylonScene;
