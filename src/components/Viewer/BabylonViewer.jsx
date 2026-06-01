@@ -4,7 +4,7 @@ import BabylonSidebar from '../Sidebar/BabylonSidebar';
 import ContextMenu from '../ContextMenu/ContextMenu';
 import AxisController from '../Toolbar/AxisController';
 import { AppHeader, LoadingPill, ComponentTypesRail, HEADER_HEIGHT, SIDEBAR_WIDTH } from '../../components/viewerShell';
-import { getCompartmentNamesFromShipData, organizeByCompartments } from '../../services/hierarchyService';
+import { getCompartmentNamesFromShipData, organizeByCompartments, getFunctionalityGroup } from '../../services/hierarchyService';
 import { loadGLBFile, compartmentHasInterior, evictInteriorFromCompartment, INTERIOR_TYPES, SHELL_TYPES } from '../../services/modelLoader';
 import { centerModel, centerOnSelection } from '../../services/cameraService';
 import { decodePartId, getPartDisplayName } from '../../utils/partIdUtils';
@@ -355,14 +355,18 @@ const BabylonViewer = () => {
         engineRef.current = engine;
         
         const loadAllComponents = async () => {
-            const allFiles = [];
+            // Only load shell files at startup for fast initial render (~3 MB)
+            // Interior components (plates, brackets, stiffeners) are loaded on-demand
+            const shellFiles = [];
             Object.values(initialOrganizedCompartments).forEach((compartment) => {
                 Object.values(compartment.components).forEach((comp) => {
-                    if (comp) allFiles.push({ type: comp.type, data: comp, compartmentName: compartment.compartmentName });
+                    if (comp && SHELL_TYPES.has(comp.type)) {
+                        shellFiles.push({ type: comp.type, data: comp, compartmentName: compartment.compartmentName });
+                    }
                 });
             });
 
-            setLoadingProgress({ loaded: 0, total: allFiles.length });
+            setLoadingProgress({ loaded: 0, total: shellFiles.length });
 
             const newLoaded = {};
             const newHullPartMeshesByCompartment = {};
@@ -373,8 +377,8 @@ const BabylonViewer = () => {
 
             let allMeshes = [];
             const BATCH = 6;
-            for (let i = 0; i < allFiles.length; i += BATCH) {
-                const batch = allFiles.slice(i, i + BATCH);
+            for (let i = 0; i < shellFiles.length; i += BATCH) {
+                const batch = shellFiles.slice(i, i + BATCH);
                 const results = await Promise.all(
                     batch.map(({ type, data, compartmentName }) =>
                         loadGLBFile(scene, data.path, compartmentName, data.name, type).then((result) => {
@@ -430,10 +434,67 @@ const BabylonViewer = () => {
 
     const isLoading = loadingProgress.total > 0 && loadingProgress.loaded < loadingProgress.total;
 
+    const formatCompartmentName = (name) => {
+        if (!name) return '';
+        return name.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+    };
+
+    const breadcrumbItems = useMemo(() => {
+        const items = [{ label: 'TEST FPSO', onClick: () => { handleReset(); } }];
+        if (selectedCompartment) {
+            const group = getFunctionalityGroup(selectedCompartment);
+            if (group) {
+                items.push({ label: group, onClick: null });
+            }
+            items.push({
+                label: formatCompartmentName(selectedCompartment),
+                onClick: viewMode !== 'compartment' ? () => enterCompartmentView(selectedCompartment) : null,
+            });
+        }
+        if (viewMode === 'hullPart' && selectedParts.length === 1) {
+            const displayName = getPartDisplayName(selectedParts[0]);
+            if (displayName) {
+                items.push({ label: formatCompartmentName(displayName), onClick: null });
+            }
+        }
+        return items;
+    }, [selectedCompartment, viewMode, selectedParts, handleReset, enterCompartmentView]);
+
+    const breadcrumbEl = (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 0, fontSize: 14, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
+            {breadcrumbItems.map((item, i) => (
+                <React.Fragment key={i}>
+                    {i > 0 && (
+                        <span style={{ color: 'rgba(255,255,255,0.35)', margin: '0 8px', fontSize: 13, userSelect: 'none' }}>/</span>
+                    )}
+                    {item.onClick ? (
+                        <span
+                            onClick={item.onClick}
+                            style={{
+                                color: 'rgba(255,255,255,0.65)',
+                                cursor: 'pointer',
+                                fontWeight: 500,
+                                transition: 'color 0.15s',
+                            }}
+                            onMouseEnter={(e) => e.target.style.color = '#fff'}
+                            onMouseLeave={(e) => e.target.style.color = 'rgba(255,255,255,0.65)'}
+                        >
+                            {item.label}
+                        </span>
+                    ) : (
+                        <span style={{ color: '#fff', fontWeight: 600 }}>
+                            {item.label}
+                        </span>
+                    )}
+                </React.Fragment>
+            ))}
+        </div>
+    );
+
     return (
         <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
             <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 5000 }}>
-                <AppHeader breadcrumbs={<span style={{ color: '#fff' }}>Test FPSO</span>} />
+                <AppHeader breadcrumbs={breadcrumbEl} />
             </div>
 
             <div style={{
