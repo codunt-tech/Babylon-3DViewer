@@ -1,12 +1,11 @@
 import React from 'react'
-import BabylonScene from '../components/BabylonScene'
+import BabylonViewer from './components/Viewer/BabylonViewer'
 
-import './App.css'
 
 function App() {
   return (
     <div className="App">
-      <BabylonScene />
+      <BabylonViewer />
     </div>
   )
 }
