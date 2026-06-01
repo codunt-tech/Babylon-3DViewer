@@ -3,19 +3,6 @@ import { EyeFill, EyeSlashFill } from 'react-bootstrap-icons';
 import { encodePartId } from '../../utils/partIdUtils';
 import { getFunctionalityGroup } from '../../services/hierarchyService';
 
-const CSS_ANIMATIONS = `
-::-webkit-scrollbar { width: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.32); }
-`;
-
-if (typeof document !== 'undefined' && !document.getElementById('sidebar-styles')) {
-  const s = document.createElement('style');
-  s.id = 'sidebar-styles';
-  s.innerText = CSS_ANIMATIONS;
-  document.head.appendChild(s);
-}
 
 const IconAnchor = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#77b3ff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

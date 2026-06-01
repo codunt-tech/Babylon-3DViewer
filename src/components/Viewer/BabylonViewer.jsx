@@ -205,7 +205,7 @@ const BabylonViewer = () => {
         if (!partId && !compartmentName) {
             setSelectedParts([]);
         }
-    }, [viewMode, selectedCompartment, enterCompartmentView]);
+    }, [viewMode, enterCompartmentView]);
 
     const handleShowAll = useCallback(() => {
         setIsolatedCompartments(new Set());
@@ -440,7 +440,7 @@ const BabylonViewer = () => {
     };
 
     const breadcrumbItems = useMemo(() => {
-        const items = [{ label: 'TEST FPSO', onClick: () => { handleReset(); } }];
+        const items = [{ label: TestFPSOStruc.vesselName ?? 'FPSO', onClick: () => { handleReset(); } }];
         if (selectedCompartment) {
             const group = getFunctionalityGroup(selectedCompartment);
             if (group) {

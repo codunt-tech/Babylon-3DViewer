@@ -1,6 +1,11 @@
 export const TestFPSOStruc = {
-    "compartment": "/TEST_FPSO_COMP.glb",
     "vesselId": "0",
+    "vesselName": "TEST FPSO",
+    /**
+     * Full-vessel composite GLB — reserved for future overview rendering.
+     * Not loaded by the current compartment-by-compartment viewer flow.
+     */
+    "vesselOverviewGlb": "/TEST_FPSO_COMP.glb",
     "plates": [
         {
             "compartmentName": "AFT_PEAK_TANK",
@@ -230,7 +235,7 @@ export const TestFPSOStruc = {
             "link": "/Brackets/FWD_DEEP_VOID_SPACE_Bracket.glb"
         },
         {
-            "compartmentName": "STORAGE_SPACES_FWD",
+            "compartmentName": "STORAGE_SPACES_FWD_BO",
             "uid": "13385086",
             "link": "/Brackets/STORAGE_SPACES_FWD_BO_Bracket.glb"
         }
@@ -347,9 +352,9 @@ export const TestFPSOStruc = {
             "link": "/Stiffeners/POTABLE_WATER_TANK_PI_Stiffener.glb"
         },
         {
-            "compartmentName": "POTABLE_WATER_TANK_S",
+            "compartmentName": "POTABLE_WATER_TANK_SI",
             "uid": "13933967",
-            "link": "/Stiffeners/POTABLE_WATER_TANK_S_Stiffener.glb"
+            "link": "/Stiffeners/POTABLE_WATER_TANK_SI_Stiffener.glb"
         },
         {
             "compartmentName": "PUMP_ROOM",
@@ -479,7 +484,7 @@ export const TestFPSOStruc = {
             "link": "/Shell/DISTILLED_WATER_TANK_SI_SHELL.glb"
         },
         {
-            "compartmentName": "ENGINE_ROOM",
+            "compartmentName": "ENGINE_ROOM_DECK",
             "uid": "14216394",
             "link": "/Shell/ENGINE_ROOM_SHELL.glb"
         },

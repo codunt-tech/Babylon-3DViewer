@@ -1,7 +1,7 @@
 import React from 'react'
 
 export const HEADER_HEIGHT    = 54
-export const SIDEBAR_WIDTH    = 360
+export const SIDEBAR_WIDTH    = 390
 export const RIGHT_RAIL_WIDTH = 220
 
 export function AppHeader({ breadcrumbs }) {

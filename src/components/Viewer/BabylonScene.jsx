@@ -25,11 +25,16 @@ const BabylonScene = React.forwardRef(({
     const sceneRef = useRef(null);
     const engineRef = useRef(null);
     const onCompartmentSelectRef = useRef(onCompartmentSelect);
+    const onSceneReadyRef = useRef(onSceneReady);
 
-    // Keep the ref in sync with the latest callback
+    // Keep refs in sync with the latest callbacks
     useEffect(() => {
         onCompartmentSelectRef.current = onCompartmentSelect;
     }, [onCompartmentSelect]);
+
+    useEffect(() => {
+        onSceneReadyRef.current = onSceneReady;
+    }, [onSceneReady]);
 
     useImperativeHandle(ref, () => ({
         get scene() { return sceneRef.current; },
@@ -145,8 +150,8 @@ const BabylonScene = React.forwardRef(({
         });
         resizeObserver.observe(canvas);
 
-        if (onSceneReady) {
-            onSceneReady(scene, engine);
+        if (onSceneReadyRef.current) {
+            onSceneReadyRef.current(scene, engine);
         }
 
         return () => {
