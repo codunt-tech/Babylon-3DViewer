@@ -1,5 +1,11 @@
 import { TestFPSOStruc } from '../data/shipData';
 
+// GLB files live under public/<MODEL_BASE>/{Shell,Plates,Brackets,Stiffeners}/.
+// shipData links are root-relative (e.g. "/Shell/..."), so prefix the model dir.
+export const MODEL_BASE = '/model-1';
+
+const withBase = (link) => (link ? `${MODEL_BASE}${link}` : link);
+
 export const getCompartmentNamesFromShipData = () => {
     const names = new Set();
     ['plates', 'brackets', 'stiffeners', 'shells'].forEach((t) => {
@@ -18,7 +24,7 @@ export const organizeByCompartments = () => {
             }
             compartments[compartmentName].components[componentType] = {
                 name: `${compartmentName}_${componentType.toUpperCase()}`,
-                path: link,
+                path: withBase(link),
                 type: componentType,
                 uid,
             };

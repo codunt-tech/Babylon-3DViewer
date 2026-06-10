@@ -23,6 +23,70 @@ export function getOrCreateSelectionMaterial(mat, scene) {
     return selMat;
 }
 
+// ─── Layer 1 ──────────────────────────────────────────────────────────────
+// The whole-model overview is merged meshes (one per compartment+type); a
+// Compartment View loads that compartment's parts unmerged. Layer 1 only needs
+// to toggle which set is visible and isolate the open compartment.
+
+const HOVER_EMISSIVE = new Color3(0.16, 0.16, 0.16);
+const SELECTED_EMISSIVE = new Color3(0.10, 0.10, 0.10);
+const NO_EMISSIVE = new Color3(0, 0, 0);
+
+const setMeshShown = (mesh, shown) => {
+    if (!mesh || mesh.isDisposed?.()) return;
+    mesh.setEnabled(shown);
+    mesh.isVisible = shown;
+    mesh.isPickable = shown;
+    if (!shown && mesh.material) mesh.material.emissiveColor = NO_EMISSIVE;
+};
+
+/**
+ * Glow every merged mesh of a compartment (hover feedback on the overview).
+ * Pass null to clear. Materials are per compartment+type, so this only touches
+ * the hovered compartment.
+ */
+export function setCompartmentHover(scene, compartmentName) {
+    if (!scene) return;
+    scene.meshes.forEach((m) => {
+        if (m.metadata?.merged && m.material) {
+            m.material.emissiveColor = (compartmentName && m.metadata.compartmentName === compartmentName)
+                ? HOVER_EMISSIVE
+                : NO_EMISSIVE;
+        }
+    });
+}
+
+/**
+ * Show the merged overview (asset mode) or isolate one compartment's unmerged
+ * parts (compartment mode).
+ */
+export function applyLayer1View({ scene, viewMode, selectedCompartment, loadedCompartments }) {
+    if (!scene) return;
+    Object.values(loadedCompartments || {}).forEach((compartment) => {
+        const isSelected = compartment.compartmentName === selectedCompartment;
+        Object.values(compartment.loadedComponents || {}).forEach((component) => {
+            const merged = component.meshes || [];
+            const detail = component.detailMeshes || [];
+
+            if (viewMode === 'asset') {
+                merged.forEach((m) => {
+                    setMeshShown(m, true);
+                    if (m.material) {
+                        m.material.emissiveColor = isSelected ? SELECTED_EMISSIVE : NO_EMISSIVE;
+                    }
+                });
+                detail.forEach((m) => setMeshShown(m, false));
+            } else {
+                // Compartment view: only the selected compartment is visible.
+                // Show its unmerged parts; fall back to merged while they load.
+                const hasDetail = detail.length > 0;
+                merged.forEach((m) => setMeshShown(m, isSelected && !hasDetail));
+                detail.forEach((m) => setMeshShown(m, isSelected));
+            }
+        });
+    });
+}
+
 export function applyMeshStates({
     loadedCompartments, compartmentVisibility, componentTypeVisibility,
     viewMode, selectedCompartment, selectedParts, selectedComponentType,
@@ -82,8 +146,8 @@ export function applyMeshStates({
                     }
                 } else {
                     if (mesh.material?.name?.endsWith('_SEL')) {
-                        const inst = scene?.getMaterialByName(`${baseMatName}_inst_${mesh.uniqueId}`);
-                        if (inst) mesh.material = inst;
+                        const base = scene?.getMaterialByName(baseMatName);
+                        if (base) mesh.material = base;
                     }
 
                     if (isAssetSelected) {

@@ -5,7 +5,7 @@ import ContextMenu from '../ContextMenu/ContextMenu';
 import AxisController from '../Toolbar/AxisController';
 import { AppHeader, LoadingPill, ComponentTypesRail, HEADER_HEIGHT, SIDEBAR_WIDTH } from '../../components/viewerShell';
 import { getCompartmentNamesFromShipData, organizeByCompartments, getFunctionalityGroup } from '../../services/hierarchyService';
-import { loadGLBFile, compartmentHasInterior, evictInteriorFromCompartment, INTERIOR_TYPES, SHELL_TYPES } from '../../services/modelLoader';
+import { loadGLBFile, SHELL_TYPES } from '../../services/modelLoader';
 import { centerModel, centerOnSelection } from '../../services/cameraService';
 import { decodePartId, getPartDisplayName } from '../../utils/partIdUtils';
 import { getMeshPartId } from '../../utils/meshUtils';
@@ -13,12 +13,16 @@ import { TestFPSOStruc } from '../../data/shipData';
 
 const initialOrganizedCompartments = organizeByCompartments();
 
+// Flow check: load EVERY component (plates/brackets/stiffeners/shells) in parallel
+// at startup instead of shells-only + on-demand interiors. Set back to false to
+// restore the lazy-loading behaviour.
+const LOAD_FULL_MODEL = true;
+
 const BabylonViewer = () => {
     const sceneRef = useRef(null);
     const engineRef = useRef(null);
     const rightClickTargetRef = useRef({ compartmentName: null, partId: null });
     const rightClickMeshRef = useRef(null);
-    const interiorCacheOrderRef = useRef([]);
     const loadedCompartmentsRef = useRef({});
 
     const compartmentNames = useMemo(() => getCompartmentNamesFromShipData(), []);
@@ -52,74 +56,59 @@ const BabylonViewer = () => {
         setCompartmentVisibility(init);
     }, [compartmentNames]);
 
-    const loadCompartmentInterior = useCallback(async (compartmentName) => {
+    // Load every part of a compartment UNMERGED (individual pickable meshes) for
+    // Compartment View. The merged overview mesh stays on `meshes`; the unmerged
+    // parts go on `detailMeshes`, and the view manager swaps which set is shown.
+    const loadCompartmentDetailed = useCallback(async (compartmentName) => {
         const scene = sceneRef.current;
-        if (!scene) return;
+        if (!scene) return [];
 
         const compartmentData = initialOrganizedCompartments[compartmentName];
-        if (!compartmentData) return;
+        if (!compartmentData) return [];
 
         const current = loadedCompartmentsRef.current;
         const existing = current[compartmentName];
-        if (compartmentHasInterior(existing)) {
-            let order = interiorCacheOrderRef.current.filter((c) => c !== compartmentName);
-            order.push(compartmentName);
-            interiorCacheOrderRef.current = order;
-            return Object.values(existing.loadedComponents || {}).flatMap((c) => c.meshes || []);
+        const alreadyDetailed = existing && Object.values(existing.loadedComponents || {})
+            .some((c) => (c.detailMeshes || []).length > 0);
+        if (alreadyDetailed) {
+            return Object.values(existing.loadedComponents).flatMap((c) => c.detailMeshes || []);
         }
 
-        const interiorFiles = Object.values(compartmentData.components)
-            .filter((comp) => INTERIOR_TYPES.has(comp.type))
-            .map((comp) => ({ type: comp.type, data: comp, compartmentName }));
+        const files = Object.values(compartmentData.components).map((comp) => ({ type: comp.type, data: comp }));
+        if (files.length === 0) return [];
 
-        if (interiorFiles.length === 0) return;
-
-        setLoadingProgress({ loaded: 0, total: interiorFiles.length });
+        setLoadingProgress({ loaded: 0, total: files.length });
 
         const newLoaded = { ...current };
         if (!newLoaded[compartmentName]) {
             newLoaded[compartmentName] = { ...compartmentData, loadedComponents: {} };
         }
 
-        let allInteriorMeshes = [];
-        for (const { type, data } of interiorFiles) {
-            const result = await loadGLBFile(scene, data.path, compartmentName, data.name, type);
+        const allDetail = [];
+        for (const { type, data } of files) {
+            const result = await loadGLBFile(scene, data.path, compartmentName, data.name, type, { merge: false });
             setLoadingProgress((prev) => ({ ...prev, loaded: prev.loaded + 1 }));
             if (result.success) {
+                const prevComp = newLoaded[compartmentName].loadedComponents[type] || {};
                 newLoaded[compartmentName].loadedComponents[type] = {
                     ...data,
-                    meshes: result.meshes,
+                    meshes: prevComp.meshes || [],   // keep the merged overview mesh
+                    detailMeshes: result.meshes,     // the unmerged, pickable parts
                     nodeTree: result.nodeTree,
                     hullPartNames: result.hullPartNames,
                 };
-                allInteriorMeshes.push(...result.meshes);
+                allDetail.push(...result.meshes);
             }
         }
-
-        let order = interiorCacheOrderRef.current.filter((c) => c !== compartmentName);
-        order.push(compartmentName);
-        while (order.length > 4) {
-            const evictName = order.shift();
-            if (!evictName || evictName === compartmentName) continue;
-            const evictComp = newLoaded[evictName];
-            if (!evictComp || !compartmentHasInterior(evictComp)) continue;
-            evictInteriorFromCompartment(evictComp);
-            const shellsOnly = {};
-            Object.entries(evictComp.loadedComponents || {}).forEach(([t, comp]) => {
-                if (SHELL_TYPES.has(comp.type)) shellsOnly[t] = comp;
-            });
-            newLoaded[evictName] = { ...evictComp, loadedComponents: shellsOnly };
-        }
-        interiorCacheOrderRef.current = order;
 
         setLoadedCompartments({ ...newLoaded });
         loadedCompartmentsRef.current = { ...newLoaded };
 
-        if (allInteriorMeshes.length > 0) {
+        if (allDetail.length > 0) {
             setHullPartMeshesByCompartment((prev) => {
                 const updated = { ...prev };
                 const cmpObj = { ...(updated[compartmentName] || {}) };
-                allInteriorMeshes.forEach((m) => {
+                allDetail.forEach((m) => {
                     const hpn = m?.metadata?.hullPartName;
                     if (hpn) cmpObj[hpn] = true;
                 });
@@ -129,31 +118,59 @@ const BabylonViewer = () => {
         }
 
         setTimeout(() => setLoadingProgress({ loaded: 0, total: 0 }), 400);
-        return allInteriorMeshes;
+        return allDetail;
     }, []);
 
-    const enterCompartmentView = useCallback((compartmentName, initialPartId = null) => {
+    const enterCompartmentView = useCallback((compartmentName) => {
         if (!compartmentName) return;
 
-        const alreadyLoaded = loadedCompartmentsRef.current[compartmentName];
-        const hasInterior = alreadyLoaded && Object.values(alreadyLoaded.loadedComponents || {})
-            .some((c) => INTERIOR_TYPES.has(c.type));
-
         setSelectedCompartment(compartmentName);
-        setSelectedParts(initialPartId ? [initialPartId] : []);
+        setSelectedParts([]);
         setSelectedComponentType(null);
         setViewMode('compartment');
 
-        if (!hasInterior) {
-            loadCompartmentInterior(compartmentName).then((meshes) => {
-                if (meshes && meshes.length > 0) {
-                    const scene = sceneRef.current;
-                    const camera = scene?.activeCamera;
-                    if (scene && camera) setTimeout(() => centerModel(scene, meshes, camera, true), 100);
-                }
-            });
+        loadCompartmentDetailed(compartmentName).then((meshes) => {
+            const scene = sceneRef.current;
+            const camera = scene?.activeCamera;
+            if (scene && camera && meshes && meshes.length > 0) {
+                setTimeout(() => centerModel(scene, meshes, camera, true), 120);
+            }
+        });
+    }, [loadCompartmentDetailed]);
+
+    // Back to the merged overview: free the open compartment's unmerged parts
+    // (their materials are shared with the merged mesh, so keep them).
+    const exitToOverview = useCallback(() => {
+        const scene = sceneRef.current;
+        const compartmentName = selectedCompartment;
+
+        setViewMode('asset');
+        setSelectedCompartment(null);
+        setSelectedParts([]);
+        setSelectedComponentType(null);
+
+        if (compartmentName && scene) {
+            const comp = loadedCompartmentsRef.current[compartmentName];
+            if (comp) {
+                const newComps = {};
+                Object.entries(comp.loadedComponents || {}).forEach(([t, c]) => {
+                    (c.detailMeshes || []).forEach((m) => {
+                        if (m && !m.isDisposed()) m.dispose(false, false);
+                    });
+                    newComps[t] = { ...c, detailMeshes: [] };
+                });
+                const newLoaded = { ...loadedCompartmentsRef.current, [compartmentName]: { ...comp, loadedComponents: newComps } };
+                setLoadedCompartments(newLoaded);
+                loadedCompartmentsRef.current = newLoaded;
+            }
         }
-    }, [loadCompartmentInterior]);
+
+        setTimeout(() => {
+            if (!scene?.activeCamera) return;
+            const all = scene.meshes.filter((m) => m.metadata?.merged && !m.isDisposed());
+            if (all.length > 0) centerModel(scene, all, scene.activeCamera, true);
+        }, 120);
+    }, [selectedCompartment]);
 
     const handleCompartmentSelect = useCallback((compartmentName, partId, position, isRightClick, pickedMesh) => {
         if (isRightClick) {
@@ -172,15 +189,14 @@ const BabylonViewer = () => {
 
         setContextMenu({ visible: false, position: { x: 0, y: 0 }, target: { compartmentName: null, partId: null } });
 
-        // ── Asset view: left-click only selects/highlights the compartment ──
+        // ── Asset view: left-click selects/deselects the compartment; no part selection ──
         if (viewMode === 'asset') {
             if (compartmentName) {
                 setSelectedCompartment((prev) => (prev === compartmentName ? null : compartmentName));
-                setSelectedParts(partId ? [partId] : []);
             } else {
                 setSelectedCompartment(null);
-                setSelectedParts([]);
             }
+            setSelectedParts([]);
             return;
         }
 
@@ -215,17 +231,33 @@ const BabylonViewer = () => {
     }, []);
 
     const handleReset = useCallback(() => {
+        // Dispose any open compartment's detail meshes before resetting state.
+        const scene = sceneRef.current;
+        const openCompartment = loadedCompartmentsRef.current;
+        Object.entries(openCompartment).forEach(([name, comp]) => {
+            const hasDetail = Object.values(comp.loadedComponents || {}).some((c) => (c.detailMeshes || []).length > 0);
+            if (!hasDetail) return;
+            const newComps = {};
+            Object.entries(comp.loadedComponents || {}).forEach(([t, c]) => {
+                (c.detailMeshes || []).forEach((m) => { if (m && !m.isDisposed()) m.dispose(false, false); });
+                newComps[t] = { ...c, detailMeshes: [] };
+            });
+            openCompartment[name] = { ...comp, loadedComponents: newComps };
+        });
+
         setViewMode('asset');
         setSelectedCompartment(null);
         setSelectedParts([]);
         setSelectedComponentType(null);
         setIsolatedCompartments(new Set());
         setHiddenPartsByCompartment({});
+        setLoadedCompartments({ ...openCompartment });
+        loadedCompartmentsRef.current = { ...openCompartment };
         handleShowAll();
 
-        if (sceneRef.current && sceneRef.current.activeCamera) {
-            const all = sceneRef.current.meshes.filter((m) => m.metadata?.compartmentName && !m.isDisposed() && m.getTotalVertices?.() > 0);
-            centerModel(sceneRef.current, all, sceneRef.current.activeCamera, true);
+        if (scene?.activeCamera) {
+            const all = scene.meshes.filter((m) => m.metadata?.merged && !m.isDisposed());
+            centerModel(scene, all.length > 0 ? all : scene.meshes.filter((m) => m.metadata?.compartmentName && !m.isDisposed() && m.getTotalVertices?.() > 0), scene.activeCamera, true);
         }
     }, [handleShowAll]);
 
@@ -318,11 +350,14 @@ const BabylonViewer = () => {
                 }
                 break;
             case 'fitToScreen':
-                if (actingPart) centerOnSelection(sceneRef.current, 'part', actingPart);
-                else if (actingCompartment) centerOnSelection(sceneRef.current, 'compartment', actingCompartment);
-                else if (sceneRef.current) {
-                    const all = sceneRef.current.meshes.filter((m) => m.metadata?.compartmentName && !m.isDisposed() && m.getTotalVertices?.() > 0);
-                    centerModel(sceneRef.current, all, sceneRef.current.activeCamera, true);
+                if (actingCompartment && viewMode !== 'asset') centerOnSelection(sceneRef.current, 'compartment', actingCompartment);
+                else if (sceneRef.current?.activeCamera) {
+                    // Whole-model fit on the overview (merged meshes).
+                    const all = sceneRef.current.meshes.filter((m) => m.metadata?.merged && !m.isDisposed());
+                    const target = all.length > 0
+                        ? all
+                        : sceneRef.current.meshes.filter((m) => m.metadata?.compartmentName && !m.isDisposed() && m.getTotalVertices?.() > 0);
+                    centerModel(sceneRef.current, target, sceneRef.current.activeCamera, true);
                 }
                 break;
             case 'compartmentView':
@@ -332,10 +367,7 @@ const BabylonViewer = () => {
                 handleEnterHullPartView(actingPart, null);
                 break;
             case 'backToAsset':
-                setViewMode('asset');
-                setSelectedCompartment(null);
-                setSelectedParts([]);
-                setSelectedComponentType(null);
+                exitToOverview();
                 break;
             case 'backToCompartment':
                 setViewMode('compartment');
@@ -348,24 +380,26 @@ const BabylonViewer = () => {
             default:
                 break;
         }
-    }, [selectedCompartment, selectedParts, togglePartVisibility, toggleCompartmentVisibility, enterCompartmentView, handleEnterHullPartView, handleSelectVisible]);
+    }, [selectedCompartment, selectedParts, viewMode, togglePartVisibility, toggleCompartmentVisibility, enterCompartmentView, exitToOverview, handleEnterHullPartView, handleSelectVisible]);
 
     const onSceneReady = useCallback((scene, engine) => {
         sceneRef.current = scene;
         engineRef.current = engine;
         
         const loadAllComponents = async () => {
-            // Only load shell files at startup for fast initial render (~3 MB)
-            // Interior components (plates, brackets, stiffeners) are loaded on-demand
+            // LOAD_FULL_MODEL=true  → load every component up-front, all in parallel.
+            // LOAD_FULL_MODEL=false → shells only (~3 MB); interiors load on-demand.
             const shellFiles = [];
             Object.values(initialOrganizedCompartments).forEach((compartment) => {
                 Object.values(compartment.components).forEach((comp) => {
-                    if (comp && SHELL_TYPES.has(comp.type)) {
+                    if (comp && (LOAD_FULL_MODEL || SHELL_TYPES.has(comp.type))) {
                         shellFiles.push({ type: comp.type, data: comp, compartmentName: compartment.compartmentName });
                     }
                 });
             });
 
+            console.time('[flow] full model load');
+            console.log(`[flow] loading ${shellFiles.length} files in parallel (batch ${6})`);
             setLoadingProgress({ loaded: 0, total: shellFiles.length });
 
             const newLoaded = {};
@@ -376,12 +410,19 @@ const BabylonViewer = () => {
             });
 
             let allMeshes = [];
-            const BATCH = 6;
+            let failedFiles = 0;
+            let framedOnce = false;
+            // Smaller batches + a yielded frame between them keep the GPU from
+            // being flooded all at once (which drops the WebGPU device on big models).
+            const BATCH = 4;
+            const yieldFrame = () => new Promise((resolve) => setTimeout(resolve, 16));
+
             for (let i = 0; i < shellFiles.length; i += BATCH) {
                 const batch = shellFiles.slice(i, i + BATCH);
                 const results = await Promise.all(
                     batch.map(({ type, data, compartmentName }) =>
-                        loadGLBFile(scene, data.path, compartmentName, data.name, type).then((result) => {
+                        // Overview: merge each file into one mesh per compartment+type.
+                        loadGLBFile(scene, data.path, compartmentName, data.name, type, { merge: true }).then((result) => {
                             setLoadingProgress((prev) => ({ ...prev, loaded: prev.loaded + 1 }));
                             return { type, data, result, compartmentName };
                         })
@@ -399,11 +440,24 @@ const BabylonViewer = () => {
                             if (hpn) cmpObj[hpn] = true;
                         });
                         allMeshes.push(...result.meshes);
+                    } else {
+                        failedFiles += 1;
                     }
                 });
-                if (allMeshes.length > 0) {
+                // Frame the camera once early for feedback; the full re-center
+                // happens after the loop. Re-centering every batch is O(n²) on
+                // tens of thousands of meshes.
+                if (!framedOnce && allMeshes.length > 0) {
                     centerModel(scene, allMeshes, scene.activeCamera, false);
+                    framedOnce = true;
                 }
+                // Let the render loop run and the GPU flush its upload queue.
+                await yieldFrame();
+            }
+
+            // Final framing over the complete model.
+            if (allMeshes.length > 0) {
+                centerModel(scene, allMeshes, scene.activeCamera, false);
             }
 
             setLoadedCompartments(newLoaded);
@@ -413,15 +467,32 @@ const BabylonViewer = () => {
             const initVis = {};
             Object.keys(newLoaded).forEach((n) => { initVis[n] = true; });
             setCompartmentVisibility(initVis);
+
+            // Spatial index for fast picking now that the scene is static.
+            scene.createOrUpdateSelectionOctree();
+
+            console.timeEnd('[flow] full model load');
+            console.log(
+                `[flow] meshes: ${allMeshes.length}, materials: ${scene.materials.length}, ` +
+                `compartments: ${Object.keys(newLoaded).length}, failed files: ${failedFiles}`
+            );
+            // Layer 1 check: every part is grouped by the compartment it belongs to.
+            const partsByCompartment = {};
+            allMeshes.forEach((m) => {
+                const c = m.metadata?.compartmentName ?? '(none)';
+                partsByCompartment[c] = (partsByCompartment[c] || 0) + 1;
+            });
+            console.log('[flow] parts per compartment:', partsByCompartment);
+
             setTimeout(() => setLoadingProgress({ loaded: 0, total: 0 }), 400);
         };
         loadAllComponents();
     }, []);
 
     useEffect(() => {
-        if (viewMode === 'compartment' && selectedCompartment) {
-            setTimeout(() => centerOnSelection(sceneRef.current, 'compartment', selectedCompartment), 80);
-        } else if (viewMode === 'hullPart' && selectedParts.length === 1) {
+        // compartment view camera centering is handled inside enterCompartmentView
+        // after detail meshes load — no centering needed here.
+        if (viewMode === 'hullPart' && selectedParts.length === 1) {
             setTimeout(() => centerOnSelection(sceneRef.current, 'part', selectedParts[0]), 80);
         }
     }, [viewMode, selectedCompartment, selectedParts]);
@@ -504,13 +575,8 @@ const BabylonViewer = () => {
             }}>
                 <BabylonScene
                     loadedCompartments={loadedCompartments}
-                    compartmentVisibility={compartmentVisibility}
-                    componentTypeVisibility={componentTypeVisibility}
                     viewMode={viewMode}
                     selectedCompartment={selectedCompartment}
-                    selectedParts={selectedParts}
-                    selectedComponentType={selectedComponentType}
-                    hiddenPartsByCompartment={hiddenPartsByCompartment}
                     onCompartmentSelect={handleCompartmentSelect}
                     onSceneReady={onSceneReady}
                 />

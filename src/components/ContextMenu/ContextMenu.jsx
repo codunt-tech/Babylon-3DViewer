@@ -85,46 +85,36 @@ const ContextMenu = React.memo(
     if (!targetCompartment && !targetPart) {
       title = 'General';
       subtitle = 'Viewport';
-      menuItems = [
-        { label: 'Select Visible Parts', action: 'selectVisible', icon: '🔍' },
-        { label: 'Fit To Screen', action: 'fitToScreen', icon: '🔲' }
-      ];
+      if (viewMode === 'compartment') {
+        menuItems = [
+          { label: 'Asset View', action: 'backToAsset', icon: '🚢' },
+          { label: 'Fit To Screen', action: 'fitToScreen', icon: '🔲' },
+        ];
+      } else {
+        menuItems = [
+          { label: 'Fit To Screen', action: 'fitToScreen', icon: '🔲' },
+        ];
+      }
     } else if (!targetCompartment) {
-      title = 'No Selection';
-      subtitle = '';
+      title = 'General';
+      subtitle = 'Viewport';
       menuItems = [
-        { label: 'Select Visible Parts', action: 'selectVisible', icon: '🔍' },
-        { label: 'Fit To Screen', action: 'fitToScreen', icon: '🔲' }
-      ];
-    } else if (!isPart) {
-      title = 'Compartment';
-      subtitle = targetCompartment.replace(/_/g, ' ');
-
-      menuItems = [
-        { label: 'Show / Hide compartment', action: 'toggleCompartmentVisibility', icon: '👁️' },
-        { label: 'Isolate compartment', action: 'isolate', icon: '📌' },
-        { label: 'Focus camera on compartment', action: 'fitToScreen', icon: '🔲' },
-        { label: 'Select Visible Parts', action: 'selectVisible', icon: '🔍' },
-        { label: 'Compartment View', action: 'compartmentView', icon: '📦' },
+        { label: 'Fit To Screen', action: 'fitToScreen', icon: '🔲' },
       ];
     } else if (viewMode === 'asset') {
-      title = 'Asset View';
-      subtitle = targetCompartment?.replace(/_/g, ' ') || 'No selection';
+      // Layer 1 overview: two actions only.
+      title = 'Compartment';
+      subtitle = targetCompartment?.replace(/_/g, ' ') || '';
       menuItems = [
         { label: 'Compartment View', action: 'compartmentView', icon: '📦' },
-        { label: 'Hull Part View', action: 'hullPartView', icon: '🔧' },
         { label: 'Fit To Screen', action: 'fitToScreen', icon: '🔲' },
-        { label: 'Select Visible Parts', action: 'selectVisible', icon: '🔍' },
       ];
     } else if (viewMode === 'compartment') {
       title = 'Compartment View';
-      subtitle = isPart ? getPartDisplayName(targetPart).replace(/_/g, ' ') : '';
+      subtitle = targetCompartment?.replace(/_/g, ' ') || '';
       menuItems = [
         { label: 'Asset View', action: 'backToAsset', icon: '🚢' },
-        { label: 'Hull Part View', action: 'hullPartView', icon: '🔧' },
         { label: 'Fit To Screen', action: 'fitToScreen', icon: '🔲' },
-        { label: 'Hide', action: 'hide', icon: '👁️' },
-        { label: 'Select Visible Parts', action: 'selectVisible', icon: '🔍' },
       ];
     } else {
       title = 'Hull Part View';

@@ -1,4 +1,4 @@
-import { SceneLoader, StandardMaterial, Color3, Color4 } from '@babylonjs/core';
+import { SceneLoader, StandardMaterial, Color3, Color4, AbstractMesh, Mesh } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
 
 export const INTERIOR_TYPES = new Set(['plates', 'brackets', 'stiffeners']);
@@ -104,7 +104,24 @@ export const evictInteriorFromCompartment = (compartment) => {
     });
 };
 
-export const loadGLBFile = async (scene, filePath, compartmentName, componentName, componentType) => {
+const applyEdges = (mesh) => {
+    mesh.enableEdgesRendering(0.9, true);
+    mesh.edgesWidth = 2.0;
+    mesh.edgesColor = new Color4(1, 1, 1, 0.85);
+};
+
+/**
+ * Import a GLB component.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.merge=false]  When true, every geometry mesh in the
+ *   file is collapsed into ONE mesh (per compartment+type). Used for the
+ *   whole-model overview — individual parts are not pickable, but draw calls
+ *   drop from thousands to one. When false, every part stays an individual,
+ *   pickable mesh (used inside Compartment View).
+ */
+export const loadGLBFile = async (scene, filePath, compartmentName, componentName, componentType, options = {}) => {
+    const { merge = false } = options;
     try {
         const result = await SceneLoader.ImportMeshAsync('', '', filePath, scene, null, '.glb');
         const geometryMeshes = result.meshes.filter((m) => m.getTotalVertices() > 0);
@@ -114,30 +131,57 @@ export const loadGLBFile = async (scene, filePath, compartmentName, componentNam
         );
         const nodeTree = buildNodeTree(transformNodes, geometryMeshes);
         const hullPartMap = buildHullPartMap(nodeTree);
+        const hullPartNames = extractHullPartNames(nodeTree, geometryMeshes);
 
+        const matName = `mat_${componentType}_${compartmentName}`;
+        const isShellType = SHELL_TYPES.has(componentType);
+
+        // One shared material per (type, compartment).
+        let baseMat = scene.getMaterialByName(matName);
+        if (!baseMat) {
+            baseMat = new StandardMaterial(matName, scene);
+            baseMat.diffuseColor = isShellType ? COMPONENT_COLORS.shells : (COMPONENT_COLORS[componentType] ?? DEFAULT_COLOR);
+            baseMat.specularColor = new Color3(0, 0, 0);
+            baseMat.specularPower = 0;
+            baseMat.backFaceCulling = false;
+            baseMat.alpha = 1.0;
+            baseMat.transparencyMode = 0;
+            if (componentType === 'plates') baseMat.zOffset = 1;
+        }
+
+        // ── Merged overview path: one mesh for the whole file ──────────────────
+        if (merge) {
+            geometryMeshes.forEach((m) => { m.material = baseMat; m.computeWorldMatrix(true); });
+            // MergeMeshes bakes each source's world transform into the result and
+            // disposes the sources, so the GPU only ever holds the merged mesh.
+            const merged = Mesh.MergeMeshes(
+                geometryMeshes, true /*disposeSource*/, true /*allow32Bit*/, undefined, false, false
+            );
+            if (!merged) {
+                return { meshes: [], transformNodes, nodeTree, hullPartNames, success: false, compartmentName, componentName, componentType };
+            }
+            merged.name = `merged_${componentType}_${compartmentName}`;
+            merged.material = baseMat;
+            merged.metadata = {
+                compartmentName, componentType, componentName,
+                hullPartName: null, baseMaterialName: matName, merged: true,
+            };
+            merged.isPickable = true;
+            merged.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
+            merged.computeWorldMatrix(true);
+            merged.freezeWorldMatrix();
+            if (isShellType) applyEdges(merged);
+
+            return {
+                meshes: [merged], transformNodes, nodeTree, hullPartNames,
+                success: true, compartmentName, componentName, componentType, merged: true,
+            };
+        }
+
+        // ── Unmerged path: every part is its own pickable mesh ─────────────────
         geometryMeshes.forEach((mesh) => {
             const hullPartName = resolveHullPartName(mesh, hullPartMap);
-            const matName = `mat_${componentType}_${compartmentName}`;
-
-            const isShellType = SHELL_TYPES.has(componentType);
-            const targetColor = isShellType
-                ? (mesh.name.toLowerCase().includes('deck') ? DECK_COLOR : COMPONENT_COLORS.shells)
-                : (COMPONENT_COLORS[componentType] ?? DEFAULT_COLOR);
-
-            let baseMat = scene.getMaterialByName(matName);
-            if (!baseMat) {
-                baseMat = new StandardMaterial(matName, scene);
-                baseMat.diffuseColor = targetColor;
-                baseMat.specularColor = new Color3(0, 0, 0);
-                baseMat.specularPower = 0;
-                baseMat.backFaceCulling = false;
-                baseMat.alpha = 1.0;
-                baseMat.transparencyMode = 0;
-                if (componentType === 'plates') baseMat.zOffset = 1;
-            }
-
-            const instanceMat = baseMat.clone(`${matName}_inst_${mesh.uniqueId}`);
-            mesh.material = instanceMat;
+            mesh.material = baseMat;
             mesh.metadata = {
                 ...mesh.metadata,
                 compartmentName,
@@ -147,18 +191,14 @@ export const loadGLBFile = async (scene, filePath, compartmentName, componentNam
                 baseMaterialName: matName,
             };
 
-            if (isShellType) {
-                mesh.enableEdgesRendering(0.9, true);
-                mesh.edgesWidth = 2.0;
-                mesh.edgesColor = new Color4(1, 1, 1, 0.85);
-            }
+            if (isShellType) applyEdges(mesh);
 
             mesh.computeWorldMatrix(true);
             mesh.freezeWorldMatrix();
             mesh.isPickable = true;
+            // Cheapest culling test — meshes are static after load.
+            mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
         });
-
-        const hullPartNames = extractHullPartNames(nodeTree, geometryMeshes);
 
         return {
             meshes: geometryMeshes,
