@@ -3,15 +3,31 @@ import BabylonScene from './BabylonScene';
 import BabylonSidebar from '../Sidebar/BabylonSidebar';
 import ContextMenu from '../ContextMenu/ContextMenu';
 import AxisController from '../Toolbar/AxisController';
-import { AppHeader, LoadingPill, ComponentTypesRail, HEADER_HEIGHT, SIDEBAR_WIDTH } from '../../components/viewerShell';
-import { getCompartmentNamesFromShipData, organizeByCompartments, getFunctionalityGroup } from '../../services/hierarchyService';
+import { AppHeader, LoadingPill, ComponentTypesRail, ModelSwitcher, HEADER_HEIGHT, SIDEBAR_WIDTH } from '../../components/viewerShell';
+import {
+    getCompartmentNamesFromShipData, organizeByCompartments, getFunctionalityGroup,
+    getActiveModel, getActiveModelId, setActiveModel, listModels,
+} from '../../services/hierarchyService';
 import { loadGLBFile, SHELL_TYPES } from '../../services/modelLoader';
 import { centerModel, centerOnSelection } from '../../services/cameraService';
 import { decodePartId, getPartDisplayName } from '../../utils/partIdUtils';
 import { getMeshPartId } from '../../utils/meshUtils';
-import { TestFPSOStruc } from '../../data/shipData';
 
-const initialOrganizedCompartments = organizeByCompartments();
+// Dispose every loaded mesh + the loader's shared materials so a different
+// model can be loaded into the same scene (camera/lights are left intact).
+const clearScene = (scene) => {
+    if (!scene) return;
+    scene.meshes.slice().forEach((m) => {
+        const isModelMesh = m.metadata?.compartmentName || m.metadata?.merged || (m.getTotalVertices?.() > 0);
+        if (isModelMesh && !m.isDisposed()) {
+            m.material = null; // material is shared; dispose it separately below
+            m.dispose(false, false);
+        }
+    });
+    scene.materials.slice().forEach((mat) => {
+        if (/^mat_/.test(mat.name) && !mat.isDisposed?.()) mat.dispose();
+    });
+};
 
 // Flow check: load EVERY component (plates/brackets/stiffeners/shells) in parallel
 // at startup instead of shells-only + on-demand interiors. Set back to false to
@@ -25,7 +41,12 @@ const BabylonViewer = () => {
     const rightClickMeshRef = useRef(null);
     const loadedCompartmentsRef = useRef({});
 
-    const compartmentNames = useMemo(() => getCompartmentNamesFromShipData(), []);
+    // Active model's organized compartments. A ref (not module const) so a model
+    // switch can swap it without re-mounting; activeModelId state drives re-renders.
+    const [activeModelId, setActiveModelId] = useState(getActiveModelId());
+    const organizedRef = useRef(organizeByCompartments());
+
+    const compartmentNames = useMemo(() => getCompartmentNamesFromShipData(), [activeModelId]);
 
     const [loadedCompartments, setLoadedCompartments] = useState({});
     const [loadingProgress, setLoadingProgress] = useState({ loaded: 0, total: 0 });
@@ -63,7 +84,7 @@ const BabylonViewer = () => {
         const scene = sceneRef.current;
         if (!scene) return [];
 
-        const compartmentData = initialOrganizedCompartments[compartmentName];
+        const compartmentData = organizedRef.current[compartmentName];
         if (!compartmentData) return [];
 
         const current = loadedCompartmentsRef.current;
@@ -345,7 +366,7 @@ const BabylonViewer = () => {
                 if (actingCompartment) {
                     setIsolatedCompartments(new Set([actingCompartment]));
                     const vis = {};
-                    Object.keys(initialOrganizedCompartments).forEach((k) => { vis[k] = k === actingCompartment; });
+                    Object.keys(organizedRef.current).forEach((k) => { vis[k] = k === actingCompartment; });
                     setCompartmentVisibility(vis);
                 }
                 break;
@@ -382,15 +403,18 @@ const BabylonViewer = () => {
         }
     }, [selectedCompartment, selectedParts, viewMode, togglePartVisibility, toggleCompartmentVisibility, enterCompartmentView, exitToOverview, handleEnterHullPartView, handleSelectVisible]);
 
-    const onSceneReady = useCallback((scene, engine) => {
-        sceneRef.current = scene;
-        engineRef.current = engine;
-        
+    // Load the currently active model into the (already-cleared) scene. Reads
+    // sceneRef + organizedRef so it can run both at scene-ready and on a switch.
+    const loadActiveModel = useCallback(async () => {
+        const scene = sceneRef.current;
+        if (!scene) return;
+        const organizedCompartments = organizedRef.current;
+
         const loadAllComponents = async () => {
             // LOAD_FULL_MODEL=true  → load every component up-front, all in parallel.
             // LOAD_FULL_MODEL=false → shells only (~3 MB); interiors load on-demand.
             const shellFiles = [];
-            Object.values(initialOrganizedCompartments).forEach((compartment) => {
+            Object.values(organizedCompartments).forEach((compartment) => {
                 Object.values(compartment.components).forEach((comp) => {
                     if (comp && (LOAD_FULL_MODEL || SHELL_TYPES.has(comp.type))) {
                         shellFiles.push({ type: comp.type, data: comp, compartmentName: compartment.compartmentName });
@@ -405,8 +429,8 @@ const BabylonViewer = () => {
             const newLoaded = {};
             const newHullPartMeshesByCompartment = {};
 
-            Object.keys(initialOrganizedCompartments).forEach((k) => {
-                newLoaded[k] = { ...initialOrganizedCompartments[k], loadedComponents: {} };
+            Object.keys(organizedCompartments).forEach((k) => {
+                newLoaded[k] = { ...organizedCompartments[k], loadedComponents: {} };
             });
 
             let allMeshes = [];
@@ -486,8 +510,38 @@ const BabylonViewer = () => {
 
             setTimeout(() => setLoadingProgress({ loaded: 0, total: 0 }), 400);
         };
-        loadAllComponents();
+        await loadAllComponents();
     }, []);
+
+    const onSceneReady = useCallback((scene, engine) => {
+        sceneRef.current = scene;
+        engineRef.current = engine;
+        loadActiveModel();
+    }, [loadActiveModel]);
+
+    // Tear down the current model and load another one into the same scene.
+    const switchModel = useCallback((id) => {
+        if (id === getActiveModelId() || loadingProgress.total > 0) return;
+
+        setActiveModel(id);
+        organizedRef.current = organizeByCompartments();
+
+        // Reset all view/selection state for the incoming model.
+        setActiveModelId(id);
+        setViewMode('asset');
+        setSelectedCompartment(null);
+        setSelectedParts([]);
+        setSelectedComponentType(null);
+        setIsolatedCompartments(new Set());
+        setHiddenPartsByCompartment({});
+        setHullPartMeshesByCompartment({});
+        setLoadedCompartments({});
+        loadedCompartmentsRef.current = {};
+        setContextMenu({ visible: false, position: { x: 0, y: 0 }, target: { compartmentName: null, partId: null } });
+
+        clearScene(sceneRef.current);
+        loadActiveModel();
+    }, [loadActiveModel, loadingProgress.total]);
 
     useEffect(() => {
         // compartment view camera centering is handled inside enterCompartmentView
@@ -511,7 +565,7 @@ const BabylonViewer = () => {
     };
 
     const breadcrumbItems = useMemo(() => {
-        const items = [{ label: TestFPSOStruc.vesselName ?? 'FPSO', onClick: () => { handleReset(); } }];
+        const items = [{ label: getActiveModel().name ?? 'FPSO', onClick: () => { handleReset(); } }];
         if (selectedCompartment) {
             const group = getFunctionalityGroup(selectedCompartment);
             if (group) {
@@ -529,7 +583,7 @@ const BabylonViewer = () => {
             }
         }
         return items;
-    }, [selectedCompartment, viewMode, selectedParts, handleReset, enterCompartmentView]);
+    }, [selectedCompartment, viewMode, selectedParts, handleReset, enterCompartmentView, activeModelId]);
 
     const breadcrumbEl = (
         <div style={{ display: 'flex', alignItems: 'center', gap: 0, fontSize: 14, fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' }}>
@@ -565,7 +619,17 @@ const BabylonViewer = () => {
     return (
         <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
             <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 5000 }}>
-                <AppHeader breadcrumbs={breadcrumbEl} />
+                <AppHeader
+                    breadcrumbs={breadcrumbEl}
+                    rightSlot={
+                        <ModelSwitcher
+                            models={listModels()}
+                            activeModelId={activeModelId}
+                            disabled={loadingProgress.total > 0}
+                            onSelect={switchModel}
+                        />
+                    }
+                />
             </div>
 
             <div style={{
@@ -584,9 +648,9 @@ const BabylonViewer = () => {
 
             <LoadingPill progress={loadingProgress.loaded} total={loadingProgress.total} />
 
-            {Object.keys(initialOrganizedCompartments).length > 0 && (
+            {Object.keys(organizedRef.current).length > 0 && (
                 <BabylonSidebar
-                    shipData={TestFPSOStruc}
+                    shipData={getActiveModel().data}
                     loadedCompartments={loadedCompartments}
                     isLoading={isLoading}
                     selectedCompartment={selectedCompartment}

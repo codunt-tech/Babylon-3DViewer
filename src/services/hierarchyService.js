@@ -1,23 +1,40 @@
-import { TestFPSOStruc } from '../data/shipData';
+import { MODELS, DEFAULT_MODEL_ID } from '../data/models';
 
-// GLB files live under public/<MODEL_BASE>/{Shell,Plates,Brackets,Stiffeners}/.
-// shipData links are root-relative (e.g. "/Shell/..."), so prefix the model dir.
-export const MODEL_BASE = '/model-1';
+const COMPONENT_TYPES = ['plates', 'brackets', 'stiffeners', 'shells'];
 
-const withBase = (link) => (link ? `${MODEL_BASE}${link}` : link);
+// Which vessel model is currently active. The GLB links inside each model's
+// ship data are root-relative (e.g. "/Plates/..."); they get prefixed with the
+// model's `base` ("/model-1"). Switching models swaps both the data and base.
+let activeModelId = DEFAULT_MODEL_ID;
+
+export const getActiveModelId = () => activeModelId;
+export const getActiveModel = () => MODELS[activeModelId];
+export const listModels = () => Object.values(MODELS);
+
+export const setActiveModel = (id) => {
+    if (MODELS[id]) activeModelId = id;
+    return activeModelId;
+};
+
+// Kept as a getter for callers that still want the active base path.
+export const getModelBase = () => getActiveModel().base;
+
+const withBase = (link) => (link ? `${getActiveModel().base}${link}` : link);
 
 export const getCompartmentNamesFromShipData = () => {
+    const data = getActiveModel().data;
     const names = new Set();
-    ['plates', 'brackets', 'stiffeners', 'shells'].forEach((t) => {
-        (TestFPSOStruc[t] || []).forEach((item) => names.add(item.compartmentName));
+    COMPONENT_TYPES.forEach((t) => {
+        (data[t] || []).forEach((item) => names.add(item.compartmentName));
     });
     return Array.from(names);
 };
 
 export const organizeByCompartments = () => {
+    const data = getActiveModel().data;
     const compartments = {};
-    ['plates', 'brackets', 'stiffeners', 'shells'].forEach((componentType) => {
-        (TestFPSOStruc[componentType] || []).forEach((item) => {
+    COMPONENT_TYPES.forEach((componentType) => {
+        (data[componentType] || []).forEach((item) => {
             const { compartmentName, uid, link } = item;
             if (!compartments[compartmentName]) {
                 compartments[compartmentName] = { compartmentName, uid, components: {} };

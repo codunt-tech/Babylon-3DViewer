@@ -149,31 +149,57 @@ export const loadGLBFile = async (scene, filePath, compartmentName, componentNam
             if (componentType === 'plates') baseMat.zOffset = 1;
         }
 
-        // ── Merged overview path: one mesh for the whole file ──────────────────
+        // ── Merged overview path: collapse the file into as few meshes as possible ─
         if (merge) {
             geometryMeshes.forEach((m) => { m.material = baseMat; m.computeWorldMatrix(true); });
-            // MergeMeshes bakes each source's world transform into the result and
-            // disposes the sources, so the GPU only ever holds the merged mesh.
-            const merged = Mesh.MergeMeshes(
-                geometryMeshes, true /*disposeSource*/, true /*allow32Bit*/, undefined, false, false
-            );
-            if (!merged) {
+
+            // A single GLB can contain meshes with DIFFERENT vertex-attribute sets
+            // (e.g. some parts carry UVs/normals, others don't). MergeMeshes throws
+            // "Cannot merge vertex data that do not have the same set of attributes"
+            // when mixed — and a thrown merge mid-upload can take down the GPU
+            // device. So group by attribute signature and merge each group on its
+            // own. Uniform files (e.g. model-1) collapse to a single mesh as before.
+            const groups = new Map();
+            geometryMeshes.forEach((m) => {
+                const sig = (m.getVerticesDataKinds?.() || []).slice().sort().join('|');
+                if (!groups.has(sig)) groups.set(sig, []);
+                groups.get(sig).push(m);
+            });
+
+            const mergedMeshes = [];
+            let groupIndex = 0;
+            for (const group of groups.values()) {
+                let merged = null;
+                try {
+                    // MergeMeshes bakes each source's world transform into the result
+                    // and disposes the sources, so the GPU only holds the merged mesh.
+                    merged = Mesh.MergeMeshes(group, true /*disposeSource*/, true /*allow32Bit*/, undefined, false, false);
+                } catch (mergeErr) {
+                    console.warn(`MergeMeshes failed for ${componentType}/${compartmentName} (${group.length} parts); skipping group`, mergeErr?.message);
+                    merged = null;
+                }
+                if (!merged) continue;
+
+                merged.name = `merged_${componentType}_${compartmentName}_${groupIndex++}`;
+                merged.material = baseMat;
+                merged.metadata = {
+                    compartmentName, componentType, componentName,
+                    hullPartName: null, baseMaterialName: matName, merged: true,
+                };
+                merged.isPickable = true;
+                merged.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
+                merged.computeWorldMatrix(true);
+                merged.freezeWorldMatrix();
+                if (isShellType) applyEdges(merged);
+                mergedMeshes.push(merged);
+            }
+
+            if (mergedMeshes.length === 0) {
                 return { meshes: [], transformNodes, nodeTree, hullPartNames, success: false, compartmentName, componentName, componentType };
             }
-            merged.name = `merged_${componentType}_${compartmentName}`;
-            merged.material = baseMat;
-            merged.metadata = {
-                compartmentName, componentType, componentName,
-                hullPartName: null, baseMaterialName: matName, merged: true,
-            };
-            merged.isPickable = true;
-            merged.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
-            merged.computeWorldMatrix(true);
-            merged.freezeWorldMatrix();
-            if (isShellType) applyEdges(merged);
 
             return {
-                meshes: [merged], transformNodes, nodeTree, hullPartNames,
+                meshes: mergedMeshes, transformNodes, nodeTree, hullPartNames,
                 success: true, compartmentName, componentName, componentType, merged: true,
             };
         }

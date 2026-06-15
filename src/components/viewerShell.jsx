@@ -4,7 +4,7 @@ export const HEADER_HEIGHT    = 54
 export const SIDEBAR_WIDTH    = 390
 export const RIGHT_RAIL_WIDTH = 220
 
-export function AppHeader({ breadcrumbs }) {
+export function AppHeader({ breadcrumbs, rightSlot }) {
     return (
         <div
             style={{
@@ -22,6 +22,56 @@ export function AppHeader({ breadcrumbs }) {
         >
             <img src="/asset/images/logo.svg" alt="ABS" style={{ height: 26, width: 'auto' }} />
             {breadcrumbs}
+            {rightSlot && <div style={{ marginLeft: 'auto' }}>{rightSlot}</div>}
+        </div>
+    )
+}
+
+// Segmented control for switching the active vessel model. Disabled while a
+// model is loading so a switch can't interrupt an in-flight load.
+export function ModelSwitcher({ models, activeModelId, onSelect, disabled }) {
+    return (
+        <div
+            style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                background: 'rgba(255,255,255,0.06)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                borderRadius: 9999,
+                padding: 3,
+                gap: 2,
+                opacity: disabled ? 0.55 : 1,
+            }}
+        >
+            {(models || []).map((m) => {
+                const active = m.id === activeModelId
+                return (
+                    <button
+                        key={m.id}
+                        type="button"
+                        title={m.name}
+                        disabled={disabled}
+                        onClick={() => onSelect(m.id)}
+                        style={{
+                            border: 'none',
+                            borderRadius: 9999,
+                            padding: '6px 14px',
+                            fontSize: 12.5,
+                            fontWeight: 700,
+                            letterSpacing: 0.2,
+                            cursor: disabled ? 'not-allowed' : 'pointer',
+                            color: active ? '#08233b' : 'rgba(255,255,255,0.85)',
+                            background: active
+                                ? 'linear-gradient(180deg, #ffffff, #d7e6f2)'
+                                : 'transparent',
+                            transition: 'background 0.15s, color 0.15s',
+                            whiteSpace: 'nowrap',
+                        }}
+                    >
+                        {m.name}
+                    </button>
+                )
+            })}
         </div>
     )
 }

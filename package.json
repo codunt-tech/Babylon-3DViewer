@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "gen:model-2": "node scripts/generateModelData.mjs model-2 PetrobrasStruc \"PETROBRAS FPSO\""
   },
   "dependencies": {
     "@babylonjs/core": "^8.14.1",
