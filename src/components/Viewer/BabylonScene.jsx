@@ -104,6 +104,12 @@ const BabylonScene = React.forwardRef(({
 
             const camera = new ArcRotateCamera('Camera', -Math.PI / 2, Math.PI / 3, 100, Vector3.Zero(), scene);
             camera.attachControl(canvas, true);
+            // Right mouse button is reserved for the context menu — don't let the
+            // camera rotate/pan on it (with the sensitive panning below, a tiny
+            // right-drag would fling the model off-screen). Left button rotates,
+            // middle button pans.
+            const pointersInput = camera.inputs?.attached?.pointers;
+            if (pointersInput) pointersInput.buttons = [0, 1];
             camera.inertia = 0.88;
             camera.angularSensibilityX = 700;
             camera.angularSensibilityY = 700;

@@ -2,8 +2,7 @@ import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react'
 import BabylonScene from './BabylonScene';
 import BabylonSidebar from '../Sidebar/BabylonSidebar';
 import ContextMenu from '../ContextMenu/ContextMenu';
-import AxisController from '../Toolbar/AxisController';
-import { AppHeader, LoadingPill, ComponentTypesRail, ModelSwitcher, HEADER_HEIGHT, SIDEBAR_WIDTH } from '../../components/viewerShell';
+import { AppHeader, LoadingPill, ModelSwitcher, HEADER_HEIGHT, SIDEBAR_WIDTH } from '../../components/viewerShell';
 import {
     getCompartmentNamesFromShipData, organizeByCompartments, getFunctionalityGroup,
     getActiveModel, getActiveModelId, setActiveModel, listModels,
@@ -13,19 +12,13 @@ import { centerModel, centerOnSelection } from '../../services/cameraService';
 import { decodePartId, getPartDisplayName } from '../../utils/partIdUtils';
 import { getMeshPartId } from '../../utils/meshUtils';
 
-// Dispose every loaded mesh + the loader's shared materials so a different
-// model can be loaded into the same scene (camera/lights are left intact).
-const clearScene = (scene) => {
+// Enable only the meshes belonging to `modelId`; disable every other model's
+// meshes. Switching models keeps both sets of meshes resident in the scene
+// (the in-memory cache) and just toggles which one is active — no re-fetch/parse.
+const setActiveModelMeshes = (scene, modelId) => {
     if (!scene) return;
-    scene.meshes.slice().forEach((m) => {
-        const isModelMesh = m.metadata?.compartmentName || m.metadata?.merged || (m.getTotalVertices?.() > 0);
-        if (isModelMesh && !m.isDisposed()) {
-            m.material = null; // material is shared; dispose it separately below
-            m.dispose(false, false);
-        }
-    });
-    scene.materials.slice().forEach((mat) => {
-        if (/^mat_/.test(mat.name) && !mat.isDisposed?.()) mat.dispose();
+    scene.meshes.forEach((m) => {
+        if (m.metadata?.modelId) m.setEnabled(m.metadata.modelId === modelId);
     });
 };
 
@@ -45,6 +38,9 @@ const BabylonViewer = () => {
     // switch can swap it without re-mounting; activeModelId state drives re-renders.
     const [activeModelId, setActiveModelId] = useState(getActiveModelId());
     const organizedRef = useRef(organizeByCompartments());
+    // Per-model cache of loaded state. Once a model is loaded its meshes stay in
+    // the scene (disabled when inactive), so switching back is instant.
+    const modelCacheRef = useRef({});
 
     const compartmentNames = useMemo(() => getCompartmentNamesFromShipData(), [activeModelId]);
 
@@ -70,6 +66,13 @@ const BabylonViewer = () => {
     const [hullPartMeshesByCompartment, setHullPartMeshesByCompartment] = useState({});
 
     useEffect(() => { loadedCompartmentsRef.current = loadedCompartments; }, [loadedCompartments]);
+
+    // Mirror the active model's loaded state into the cache on every change, so
+    // switching away and back restores exactly what was on screen (including any
+    // compartment detail meshes) without re-fetching/parsing.
+    useEffect(() => {
+        modelCacheRef.current[getActiveModelId()] = { loadedCompartments, hullPartMeshesByCompartment };
+    }, [loadedCompartments, hullPartMeshesByCompartment]);
 
     useEffect(() => {
         const init = {};
@@ -105,11 +108,14 @@ const BabylonViewer = () => {
             newLoaded[compartmentName] = { ...compartmentData, loadedComponents: {} };
         }
 
+        const modelId = getActiveModelId();
         const allDetail = [];
         for (const { type, data } of files) {
             const result = await loadGLBFile(scene, data.path, compartmentName, data.name, type, { merge: false });
             setLoadingProgress((prev) => ({ ...prev, loaded: prev.loaded + 1 }));
             if (result.success) {
+                // Tag for the model cache so a switch can enable/disable by model.
+                (result.meshes || []).forEach((m) => { if (m.metadata) m.metadata.modelId = modelId; });
                 const prevComp = newLoaded[compartmentName].loadedComponents[type] || {};
                 newLoaded[compartmentName].loadedComponents[type] = {
                     ...data,
@@ -122,8 +128,15 @@ const BabylonViewer = () => {
             }
         }
 
-        setLoadedCompartments({ ...newLoaded });
-        loadedCompartmentsRef.current = { ...newLoaded };
+        const merged = { ...newLoaded };
+        setLoadedCompartments(merged);
+        loadedCompartmentsRef.current = merged;
+
+        // The selection octree decides which meshes are rendered/picked. It was
+        // built from the overview meshes only; these detail meshes were added
+        // afterwards, so rebuild it to include them — otherwise they're never
+        // selected as active meshes and stay invisible.
+        if (allDetail.length > 0) scene.createOrUpdateSelectionOctree();
 
         if (allDetail.length > 0) {
             setHullPartMeshesByCompartment((prev) => {
@@ -184,6 +197,9 @@ const BabylonViewer = () => {
                 setLoadedCompartments(newLoaded);
                 loadedCompartmentsRef.current = newLoaded;
             }
+            // Detail meshes were disposed — rebuild the octree so it no longer
+            // references them.
+            scene.createOrUpdateSelectionOctree();
         }
 
         setTimeout(() => {
@@ -275,6 +291,9 @@ const BabylonViewer = () => {
         setLoadedCompartments({ ...openCompartment });
         loadedCompartmentsRef.current = { ...openCompartment };
         handleShowAll();
+
+        // Detail meshes may have been disposed above — refresh the octree.
+        if (scene) scene.createOrUpdateSelectionOctree();
 
         if (scene?.activeCamera) {
             const all = scene.meshes.filter((m) => m.metadata?.merged && !m.isDisposed());
@@ -408,6 +427,7 @@ const BabylonViewer = () => {
     const loadActiveModel = useCallback(async () => {
         const scene = sceneRef.current;
         if (!scene) return;
+        const modelId = getActiveModelId();
         const organizedCompartments = organizedRef.current;
 
         const loadAllComponents = async () => {
@@ -454,6 +474,9 @@ const BabylonViewer = () => {
                 );
                 results.forEach(({ type, data, result, compartmentName }) => {
                     if (result.success) {
+                        // Tag for the model cache so a switch can enable/disable by model.
+                        (result.meshes || []).forEach((m) => { if (m.metadata) m.metadata.modelId = modelId; });
+
                         newLoaded[compartmentName].loadedComponents[type] = {
                             ...data, meshes: result.meshes, nodeTree: result.nodeTree, hullPartNames: result.hullPartNames,
                         };
@@ -475,6 +498,12 @@ const BabylonViewer = () => {
                     centerModel(scene, allMeshes, scene.activeCamera, false);
                     framedOnce = true;
                 }
+                // Rebuild the octree each batch so the meshes streamed in so far
+                // are selected as active and render *during* load. Without this, a
+                // stale octree left over from a previously-loaded model hides the
+                // incoming meshes until the final rebuild after the loop. The
+                // overview meshes are merged (few), so this is cheap.
+                if (allMeshes.length > 0) scene.createOrUpdateSelectionOctree();
                 // Let the render loop run and the GPU flush its upload queue.
                 await yieldFrame();
             }
@@ -487,6 +516,7 @@ const BabylonViewer = () => {
             setLoadedCompartments(newLoaded);
             loadedCompartmentsRef.current = newLoaded;
             setHullPartMeshesByCompartment(newHullPartMeshesByCompartment);
+            // (The cache is kept in sync by the loadedCompartments effect.)
 
             const initVis = {};
             Object.keys(newLoaded).forEach((n) => { initVis[n] = true; });
@@ -519,9 +549,12 @@ const BabylonViewer = () => {
         loadActiveModel();
     }, [loadActiveModel]);
 
-    // Tear down the current model and load another one into the same scene.
+    // Switch the active model. Models loaded earlier this session are restored
+    // instantly from the in-memory cache (their meshes are kept in the scene,
+    // just disabled); a model seen for the first time is loaded fresh.
     const switchModel = useCallback((id) => {
         if (id === getActiveModelId() || loadingProgress.total > 0) return;
+        const scene = sceneRef.current;
 
         setActiveModel(id);
         organizedRef.current = organizeByCompartments();
@@ -534,12 +567,34 @@ const BabylonViewer = () => {
         setSelectedComponentType(null);
         setIsolatedCompartments(new Set());
         setHiddenPartsByCompartment({});
+        setContextMenu({ visible: false, position: { x: 0, y: 0 }, target: { compartmentName: null, partId: null } });
+
+        // Show this model's meshes, hide every other model's.
+        setActiveModelMeshes(scene, id);
+
+        const cached = modelCacheRef.current[id];
+        if (cached) {
+            setHullPartMeshesByCompartment(cached.hullPartMeshesByCompartment);
+            setLoadedCompartments(cached.loadedCompartments);
+            loadedCompartmentsRef.current = cached.loadedCompartments;
+            const vis = {};
+            Object.keys(cached.loadedCompartments).forEach((n) => { vis[n] = true; });
+            setCompartmentVisibility(vis);
+            if (scene) scene.createOrUpdateSelectionOctree();
+            // Re-frame the (already-resident) overview meshes.
+            setTimeout(() => {
+                const cam = scene?.activeCamera;
+                if (!cam) return;
+                const all = scene.meshes.filter((m) => m.metadata?.modelId === id && m.metadata?.merged && !m.isDisposed());
+                if (all.length) centerModel(scene, all, cam, true);
+            }, 80);
+            return;
+        }
+
+        // First time for this model — load it (its meshes get tagged + cached).
         setHullPartMeshesByCompartment({});
         setLoadedCompartments({});
         loadedCompartmentsRef.current = {};
-        setContextMenu({ visible: false, position: { x: 0, y: 0 }, target: { compartmentName: null, partId: null } });
-
-        clearScene(sceneRef.current);
         loadActiveModel();
     }, [loadActiveModel, loadingProgress.total]);
 
@@ -634,7 +689,7 @@ const BabylonViewer = () => {
 
             <div style={{
                 position: 'fixed', top: HEADER_HEIGHT, left: SIDEBAR_WIDTH,
-                width: `calc(100% - ${SIDEBAR_WIDTH}px - ${viewMode !== 'asset' ? 220 : 0}px)`,
+                width: `calc(100% - ${SIDEBAR_WIDTH}px)`,
                 height: `calc(100vh - ${HEADER_HEIGHT}px)`, zIndex: 1,
             }}>
                 <BabylonScene
@@ -672,15 +727,6 @@ const BabylonViewer = () => {
                     topOffset={HEADER_HEIGHT}
                 />
             )}
-
-            {viewMode !== 'asset' && (
-                <ComponentTypesRail
-                    componentTypeVisibility={componentTypeVisibility}
-                    onToggle={toggleComponentTypeVisibility}
-                />
-            )}
-
-            <AxisController sceneRef={sceneRef} />
 
             <ContextMenu
                 position={contextMenu.position}

@@ -126,6 +126,15 @@ export const loadGLBFile = async (scene, filePath, compartmentName, componentNam
         const result = await SceneLoader.ImportMeshAsync('', '', filePath, scene, null, '.glb');
         const geometryMeshes = result.meshes.filter((m) => m.getTotalVertices() > 0);
 
+        // We paint every mesh with our own solid StandardMaterial, so the GLB's
+        // per-vertex colors must be ignored. Some models (e.g. model-2) ship
+        // COLOR_0/COLOR_1 with an alpha channel — left enabled, Babylon treats it
+        // as vertex alpha and renders the parts fully transparent (invisible).
+        geometryMeshes.forEach((m) => {
+            m.useVertexColors = false;
+            m.hasVertexAlpha = false;
+        });
+
         const transformNodes = (result.transformNodes || []).filter(
             (tn) => tn.name && tn.name !== '__root__' && !tn.name.startsWith('__')
         );
@@ -182,6 +191,8 @@ export const loadGLBFile = async (scene, filePath, compartmentName, componentNam
 
                 merged.name = `merged_${componentType}_${compartmentName}_${groupIndex++}`;
                 merged.material = baseMat;
+                merged.useVertexColors = false;
+                merged.hasVertexAlpha = false;
                 merged.metadata = {
                     compartmentName, componentType, componentName,
                     hullPartName: null, baseMaterialName: matName, merged: true,
