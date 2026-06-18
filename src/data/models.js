@@ -1,5 +1,6 @@
 import { TestFPSOStruc } from './shipData';
 import { PetrobrasStruc } from './model_2Data';
+import { Model3Struc } from './Model_3Data';
 
 // Registry of every vessel model the viewer can show. Each entry pairs the
 // ship-data structure (compartments + per-type GLB links) with the public/
@@ -22,6 +23,12 @@ export const MODELS = {
         name: PetrobrasStruc.vesselName || 'Model 2',
         base: '/model-2',
         data: PetrobrasStruc,
+    },
+    'model-3': {
+        id: 'model-3',
+        name: Model3Struc.vesselName || 'Model 3',
+        base: '/Model-3',
+        data: Model3Struc,
     },
 };
 

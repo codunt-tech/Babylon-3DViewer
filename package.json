@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "gen:model-2": "node scripts/generateModelData.mjs model-2 PetrobrasStruc \"PETROBRAS FPSO\""
+    "gen:model-2": "node scripts/generateModelData.mjs model-2 PetrobrasStruc \"PETROBRAS FPSO\"",
+    "gen:model-3": "node scripts/generateModelData.mjs Model-3 Model3Struc \"MV29 FPSO\""
   },
   "dependencies": {
     "@babylonjs/core": "^8.14.1",
