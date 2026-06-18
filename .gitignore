@@ -26,5 +26,5 @@ dist-ssr
 
 # Large model-3 GLB assets (kept out of git; data module src/data/Model_3Data.js is tracked)
 public/Model-3/
-# public/model-2/
-# public/model-1/
+public/model-2/
+public/model-1/
